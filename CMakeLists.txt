@@ -84,6 +84,7 @@ add_executable(
     tests/test_hud.cpp
     tests/test_audio.cpp
     tests/test_replay.cpp
+    tests/test_render.cpp
 )
 target_link_libraries(game_tests PRIVATE game_core Catch2::Catch2WithMain)
 target_compile_features(game_tests PRIVATE cxx_std_20)
