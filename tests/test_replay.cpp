@@ -461,6 +461,47 @@ TEST_CASE("replay: reset is reproducible and seed-sensitive") {
             std::string::npos);
 }
 
+// The seed is currently inert, and this test exists to say so out loud.
+//
+// The replay session flagged that its seed-sensitivity check only proved a
+// different seed changes the serialized rng.state, not that gameplay diverges,
+// because nothing consumed the RNG while the tick paths were stubs. That
+// caveat survived integration: no simulation code calls next() on gs.rng at
+// all. The only RNG consumers are audio.cpp's waveform generators, which use
+// their own fixed-seed local Rng objects and never touch game state.
+//
+// mvp.md asks for "one explicit seeded RNG, its full state part of the game
+// state" -- an architectural provision, not a promise of varied gameplay. The
+// MVP's level layout and AI are deliberately deterministic, so an unused RNG
+// is not a missing feature. But reset(gs, seed) reads as though runs vary, and
+// a test named "seed-sensitive" reads as though that is verified. Neither is
+// true, so this pins the actual behaviour instead of implying a better one.
+//
+// If a gameplay path ever consumes gs.rng, this test fails and points at the
+// two things that must then be revisited: the pinned replay digests above, and
+// whether seeded variation is genuinely wanted.
+TEST_CASE("replay: no gameplay path consumes the seeded RNG") {
+    constexpr std::uint32_t seed_a = 0x5eed1234u;
+    constexpr std::uint32_t seed_b = 0x0badc0deu;
+    const InputScript script = ten_second_script();
+    const ReplayResult a = run_replay(seed_a, script);
+    const ReplayResult b = run_replay(seed_b, script);
+
+    // 600 ticks of real movement, firing, AI and damage leave the generator
+    // exactly where reset() put it. One assertion, and it proves the claim.
+    CHECK(a.state.rng.state == seed_a);
+    CHECK(b.state.rng.state == seed_b);
+
+    // Everything except the stored seed is byte-identical across seeds. This
+    // compares whole canonical states rather than a field list, so it stays
+    // honest if new gameplay fields are added later.
+    eh::GameState a_normalized = a.state;
+    eh::GameState b_normalized = b.state;
+    a_normalized.rng.state = 0u;
+    b_normalized.rng.state = 0u;
+    require_same_state(serialize_state(a_normalized), serialize_state(b_normalized));
+}
+
 TEST_CASE("replay: serialization is fixed-width and field-sensitive") {
     eh::GameState original;
     eh::reset(original, 0xabcdef01u);
