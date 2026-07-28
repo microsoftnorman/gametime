@@ -63,7 +63,18 @@ target_link_libraries(game_app PRIVATE game_core raylib)
 target_compile_features(game_app PRIVATE cxx_std_20)
 
 enable_testing()
-add_executable(game_tests tests/test_smoke.cpp)
+# Each test file is owned by one workstream; sessions must not add sources to this list.
+add_executable(
+    game_tests
+    tests/test_smoke.cpp
+    tests/test_raycast.cpp
+    tests/test_player.cpp
+    tests/test_entities.cpp
+    tests/test_sprites.cpp
+    tests/test_hud.cpp
+    tests/test_audio.cpp
+    tests/test_replay.cpp
+)
 target_link_libraries(game_tests PRIVATE game_core Catch2::Catch2WithMain)
 target_compile_features(game_tests PRIVATE cxx_std_20)
 
