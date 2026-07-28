@@ -1,9 +1,11 @@
 #include "core/entities.h"
 #include "core/state.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -322,4 +324,39 @@ TEST_CASE("entities: stable id ordering survives many ticks") {
     }
     REQUIRE(final_ids == ids);
     REQUIRE(std::is_sorted(final_ids.begin(), final_ids.end()));
+}
+
+// --- Coordinator-added at integration -------------------------------------
+// mvp.md gives the Egg a 1.8 tiles/s move speed, and while "chasing closes the
+// distance" proves direction, nothing proved the rate. The same gap existed on
+// the player side and a 7.7% speed regression there passed the whole suite.
+TEST_CASE("entities: chase speed matches the tuning table in mvp.md") {
+    eh::GameState gs = fresh_game();
+    eh::Entity &egg = entity_of_type(gs, eh::EntityType::Egg);
+    disable_other_eggs(gs, egg.id);
+    place(egg, 6, 3);
+    egg.ai = eh::AiState::Chase;
+    gs.player.x = tile_center(3);
+    gs.player.y = tile_center(3);
+
+    const eh::fx start_x = egg.x;
+    const eh::fx start_y = egg.y;
+
+    // 20 ticks covers ~0.6 tiles, well short of the 0.7-tile attack range at
+    // which the egg would stop closing and the measurement would go flat.
+    constexpr int TICKS = 20;
+    for (int tick = 0; tick < TICKS; ++tick) {
+        gs.events.clear();
+        eh::entities_tick(gs);
+    }
+
+    REQUIRE(egg.ai == eh::AiState::Chase);
+
+    const double dx = static_cast<double>(egg.x - start_x);
+    const double dy = static_cast<double>(egg.y - start_y);
+    const double tiles = std::sqrt(dx * dx + dy * dy) / static_cast<double>(eh::FX_ONE);
+    const double tiles_per_second =
+        tiles * static_cast<double>(eh::TICKS_PER_SECOND) / static_cast<double>(TICKS);
+
+    CHECK(tiles_per_second == Catch::Approx(1.8).epsilon(0.015));
 }
