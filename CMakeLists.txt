@@ -8,6 +8,16 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Link the CRT statically on MSVC so game_app.exe runs on a clean machine with
+# no Visual C++ Redistributable installed. Without this the executable imports
+# MSVCP140.dll / VCRUNTIME140.dll and fails to start on a stock Windows box --
+# a demo-day failure mode that never shows up on a developer machine.
+# Must be set before FetchContent_MakeAvailable so raylib and Catch2 inherit it;
+# mixing static and dynamic CRTs in one binary is a link error.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
 
