@@ -2,6 +2,7 @@
 #include "core/hud.h"
 #include "core/state.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -74,6 +75,25 @@ std::vector<uint32_t> render_pixels(const eh::GameState &state) {
     GuardedFramebuffer target;
     eh::render_hud(state, target.framebuffer);
     return target.image();
+}
+
+// Length of the longest contiguous horizontal run of pixels that differ from a
+// baseline image. Used to locate the health bar rather than hardcoding its
+// geometry: against the zero-health render the bar fill is the only long
+// contiguous run of changed pixels, since glyph strokes are a few pixels wide.
+// That keeps HUD layout constants out of this file.
+int longest_changed_run(const std::vector<uint32_t> &image, const std::vector<uint32_t> &baseline) {
+    int longest = 0;
+    for (int y = 0; y < eh::Framebuffer::H; ++y) {
+        int run = 0;
+        for (int x = 0; x < eh::Framebuffer::W; ++x) {
+            const std::size_t index =
+                static_cast<std::size_t>(y) * eh::Framebuffer::W + static_cast<std::size_t>(x);
+            run = image[index] != baseline[index] ? run + 1 : 0;
+            longest = std::max(longest, run);
+        }
+    }
+    return longest;
 }
 
 } // namespace
@@ -183,6 +203,35 @@ TEST_CASE("hud: low health and empty ammo flash without affecting healthy output
     const std::vector<uint32_t> empty_phase_two = render_pixels(empty_ammo);
     REQUIRE(empty_phase_one != healthy_phase_one);
     REQUIRE(empty_phase_one != empty_phase_two);
+}
+
+// The health bar must actually deplete.
+//
+// Replacing its fill width with a constant -- a bar that stays full while the
+// player is being killed -- passed all 70 tests. The HUD suite asserts bounds,
+// clipping, presence and flash colour, which are safety and relational
+// properties that hold at any fill width. Nothing tied the widget to the value
+// it exists to display, so the one thing a player reads mid-fight to decide
+// whether to retreat could have been frozen without a single test objecting.
+TEST_CASE("hud: the health bar depletes in proportion to health") {
+    eh::GameState state = playing_state();
+    state.player.health = 0;
+    const std::vector<uint32_t> empty_bar = render_pixels(state);
+
+    state.player.health = 100;
+    const int full = longest_changed_run(render_pixels(state), empty_bar);
+    state.player.health = 50;
+    const int half = longest_changed_run(render_pixels(state), empty_bar);
+    state.player.health = 25;
+    const int quarter = longest_changed_run(render_pixels(state), empty_bar);
+
+    // The bar was found, and is far wider than any glyph stroke.
+    REQUIRE(full > 100);
+
+    CHECK(full > half);
+    CHECK(half > quarter);
+    CHECK(half * 2 == Catch::Approx(full).margin(6));
+    CHECK(quarter * 4 == Catch::Approx(full).margin(8));
 }
 
 TEST_CASE("hud: unsupported font characters use a safe fallback glyph") {
