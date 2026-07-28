@@ -50,6 +50,13 @@ struct GameState {
 
 constexpr int TICKS_PER_SECOND = 60;
 
+// Duration of the muzzle flash, shared because two modules disagree about it
+// otherwise: player.cpp sets the timer and sprites.cpp divides by it to derive
+// flash and recoil strength. Those were independent literals, and pointing the
+// renderer's copy at a different value was verified to pass the entire suite
+// while the flash silently stopped reaching full brightness.
+constexpr uint16_t MUZZLE_FLASH_TICKS = 4;
+
 void reset(GameState &gs, uint32_t seed);
 void tick(GameState &gs, const InputFrame &in);
 

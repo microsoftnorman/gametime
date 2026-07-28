@@ -26,7 +26,6 @@ constexpr fx BOB_PHASE_STEP = FX_ONE / 12;
 
 constexpr int DAMAGE = 34;
 constexpr uint16_t FIRE_COOLDOWN_TICKS = 18;
-constexpr uint16_t MUZZLE_FLASH_TICKS = 4;
 constexpr uint16_t HIT_FLASH_TICKS = 9;
 constexpr fx MAX_RANGE = FX_ONE * 20;
 constexpr fx EGG_HIT_RADIUS = FX_ONE * 3 / 10;

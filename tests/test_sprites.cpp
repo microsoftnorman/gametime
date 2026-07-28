@@ -361,6 +361,52 @@ TEST_CASE("sprites: an unhit egg is not tinted") {
     REQUIRE(first->pixels() == second->pixels());
 }
 
+TEST_CASE("sprites: the muzzle flash peaks when fired and fades over its lifetime") {
+    // player.cpp sets muzzle_flash and sprites.cpp divides by the same duration to derive
+    // flash and recoil strength. These were independent literals; pointing the renderer's
+    // copy at a different value passed all 87 tests while the weapon silently stopped
+    // kicking its full distance. The constant is now shared, and this pins the ramp.
+    struct Shot {
+        std::size_t lit;
+        PixelBounds bounds;
+    };
+
+    auto fire = [](uint16_t muzzle_flash) {
+        eh::GameState state = state_facing_east();
+        state.muzzle_flash = muzzle_flash;
+        auto buffer = std::make_unique<GuardedFramebuffer>();
+        eh::render_weapon(state, buffer->framebuffer);
+        REQUIRE(buffer->guards_intact());
+
+        Shot shot{0, modified_bounds(*buffer)};
+        for (uint32_t pixel : buffer->pixels()) {
+            if (pixel != BACKGROUND && is_flash_pixel(pixel)) {
+                ++shot.lit;
+            }
+        }
+        return shot;
+    };
+
+    const Shot idle = fire(0);
+    const Shot fresh = fire(eh::MUZZLE_FLASH_TICKS);
+    const Shot stale = fire(1);
+    CAPTURE(idle.lit, fresh.lit, idle.bounds.top, fresh.bounds.top, stale.bounds.top);
+
+    // The flash itself only exists while the timer is running.
+    REQUIRE(idle.lit == 0);
+    REQUIRE(fresh.lit > 0);
+    REQUIRE(idle.bounds.valid());
+
+    // Recoil kicks the weapon down and to the right in proportion to the remaining
+    // ticks, so firing reads as an impulse that settles rather than a steady offset.
+    // Only the two firing frames are compared: the flash starburst extends the drawn
+    // sprite upward, so an idle frame's bounds are not measuring the same thing.
+    REQUIRE(fresh.bounds.valid());
+    REQUIRE(stale.bounds.valid());
+    REQUIRE(fresh.bounds.top > stale.bounds.top);
+    REQUIRE(fresh.bounds.left > stale.bounds.left);
+}
+
 TEST_CASE("sprites: weapon stays in bounds and reacts to muzzle flash") {
     eh::GameState idle = state_facing_east();
     idle.player.bob = eh::fx_from_float(1.25f);

@@ -573,7 +573,8 @@ void render_weapon(const GameState &gs, Framebuffer &fb) {
     float recoil = 0.0f;
     float flash_strength = 0.0f;
     if (gs.muzzle_flash > 0) {
-        const float initial_strength = std::min(static_cast<float>(gs.muzzle_flash) / 4.0f, 1.0f);
+        const float initial_strength = std::min(
+            static_cast<float>(gs.muzzle_flash) / static_cast<float>(MUZZLE_FLASH_TICKS), 1.0f);
         recoil = 0.45f + initial_strength * 0.55f;
         flash_strength = 0.65f + initial_strength * 0.35f;
     }
