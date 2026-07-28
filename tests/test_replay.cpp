@@ -334,6 +334,14 @@ eh::InputFrame input(std::int8_t move_x = 0, std::int8_t move_y = 0, std::int8_t
 // turned equally in both directions and then stood still, which left the whole
 // 600-tick digest blind to turning: halving the keyboard turn rate passed every
 // test in the suite. Keep the net rotation non-zero and keep movement after it.
+//
+// The tail is a fighting sequence, not idle time. An earlier version ended with
+// 149 stationary ticks and a single Fire pulse that missed, so the entire run
+// dealt zero damage: eggs_remaining stayed at 5 and every egg finished on a full
+// 60 health. That left this digest -- the strongest oracle in the suite -- blind
+// to all of combat. Changing DAMAGE from 34 to 51 was verified to pass it
+// untouched. The tail now sweeps a full turn while firing at the cooldown
+// cadence, so eggs that have closed to contact range are actually shot.
 InputScript ten_second_script() {
     InputScript script;
     script.hold(30, input(0, 1, 0, 0, eh::InputFrame::Sprint))
@@ -345,8 +353,16 @@ InputScript ten_second_script() {
         .hold(60, input(0, 0, 0, 3))
         .hold(30, input(0, 0, 0, -3))
         .pulse(eh::InputFrame::Fire)
-        .hold(60, input(0, 1))
-        .hold(149);
+        .hold(60, input(0, 1));
+
+    // 8 * 18 + 5 == 149, keeping the script at exactly 600 ticks. Turning at
+    // KEYBOARD_TURN_UNITS for 149 ticks sweeps slightly over one full rotation,
+    // so the muzzle passes across every bearing while shots are in the air.
+    const eh::InputFrame sweep = input(0, 0, 1);
+    for (int shot = 0; shot < 8; ++shot) {
+        script.pulse(eh::InputFrame::Fire, sweep).hold(17, sweep);
+    }
+    script.hold(5, sweep);
     return script;
 }
 
@@ -386,7 +402,7 @@ ReplayResult run_replay(std::uint32_t seed, const InputScript &script) {
 TEST_CASE("replay: a 600 tick input script is deterministic") {
     const InputScript script = ten_second_script();
     REQUIRE(script.tick_count() == 10u * eh::TICKS_PER_SECOND);
-    REQUIRE(script.button_ticks(eh::InputFrame::Fire) == 1);
+    REQUIRE(script.button_ticks(eh::InputFrame::Fire) == 9);
 
     constexpr std::uint32_t seed = 0x5eed1234u;
     const ReplayResult first = run_replay(seed, script);
@@ -414,6 +430,30 @@ TEST_CASE("replay: a 600 tick input script is deterministic") {
     REQUIRE(
         (first.state.player.x != untouched.player.x || first.state.player.y != untouched.player.y));
 
+    // Combat non-vacuity guard. Movement and turning alone are not the game.
+    // The previous script fired one shot that missed, so this replay ran 600
+    // ticks without dealing a single point of damage -- every egg finished on a
+    // full 60 health and eggs_remaining never moved off 5. Everything downstream
+    // of a connecting shot was therefore outside the digest: EggHit, hit flash,
+    // knockback, death, the egg counter and EggDeath emission. Changing DAMAGE
+    // from 34 to 51 was verified to leave both digests untouched.
+    //
+    // These are stated as exact values rather than a digest so that a failure
+    // says which part of combat moved instead of just printing a changed hash.
+    int total_egg_health = 0;
+    int eggs_alive = 0;
+    for (const eh::Entity &entity : first.state.entities) {
+        if (entity.type == eh::EntityType::Egg) {
+            total_egg_health += entity.health;
+            eggs_alive += entity.alive ? 1 : 0;
+        }
+    }
+    REQUIRE(first.state.player.ammo == untouched.player.ammo - 9); // every shot left the barrel
+    REQUIRE(total_egg_health == 232);                              // 300 - two connecting hits
+    REQUIRE(first.state.eggs_remaining == 4);                      // one egg was killed outright
+    REQUIRE(eggs_alive == first.state.eggs_remaining);
+    REQUIRE(first.state.player.health < untouched.player.health); // the eggs fought back
+
     // Golden digests.
     //
     // Everything above only proves the simulation is self-consistent: it runs
@@ -424,16 +464,21 @@ TEST_CASE("replay: a 600 tick input script is deterministic") {
     // Pinning the digests converts this from a determinism check into a
     // whole-simulation regression detector: any change to movement, turning,
     // collision, firing, AI, damage, RNG advancement, visual timers or event
-    // emission moves one of these numbers. And because gameplay state is
-    // fixed-point integer maths with explicitly-sized little-endian
+    // emission moves one of these numbers. That claim is only true because the
+    // script above actually connects a shot and kills an egg; it was false, and
+    // silently so, while the script's one shot missed. If the script is ever
+    // retuned, re-check the combat guard above before trusting this comment.
+    //
+    // And because gameplay state is fixed-point integer maths with
+    // explicitly-sized little-endian
     // serialization, the same values must appear under GCC on Linux -- so CI
     // turns the cross-platform determinism claim in mvp.md into an assertion
     // rather than an aspiration.
     //
     // A failure here is expected and correct after a deliberate tuning change.
     // require_same_state names the field that moved; re-run and update.
-    constexpr std::uint64_t golden_digest = 0x6069fa714730d78eull;
-    constexpr std::uint64_t golden_trajectory = 0xf587096a9c0bceeaull;
+    constexpr std::uint64_t golden_digest = 0xdfaed6ee74142bafull;
+    constexpr std::uint64_t golden_trajectory = 0x8228c9c8ab818c28ull;
     if (first.digest != golden_digest || first.trajectory != golden_trajectory) {
         WARN("600 tick replay digests: final=0x" << std::hex << first.digest << " trajectory=0x"
                                                  << first.trajectory << std::dec);
