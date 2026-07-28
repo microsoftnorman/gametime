@@ -37,6 +37,14 @@ jobs:
             libwayland-dev \
             libxkbcommon-dev
 
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Ninja
+        if: runner.os == 'Windows'
+        run: pip install ninja
+
       - name: Cache FetchContent dependencies
         uses: actions/cache@v4
         with:
@@ -51,7 +59,7 @@ jobs:
 
       - name: Test
         working-directory: out/build/${{ matrix.preset }}
-        run: ctest -C Release --output-on-failure
+        run: ctest --output-on-failure
 
       # Demo insurance: a ready-to-run build is attached to every green run, so
       # presenting never depends on compiling successfully on the day.

@@ -33,10 +33,12 @@ cmake --build --preset windows-msvc-release
 
 The binary lands in `out/build/<preset>/game_app.exe`.
 
-> **Windows note:** if `cmake` is not on your `PATH`, call it by full path
-> (`"C:\Program Files\CMake\bin\cmake.exe"`) from a shell where you have already
-> run `vcvars64.bat`. Configuring without the MSVC environment loaded fails in a
-> confusing way.
+> **Windows note:** these presets use Ninja with `cl`, so run them from a shell
+> where `vcvars64.bat` has already been called. If `cmake` is not on your `PATH`,
+> invoke it by full path rather than prepending to `PATH` inside the same `cmd`
+> line — `%PATH%` is expanded before `vcvars64.bat` runs, so
+> `set PATH=...;%PATH%` silently discards the entire Visual Studio environment
+> and you get a confusing "unable to find Ninja" or "cannot find the compiler".
 
 On Windows the CRT is linked statically, so `game_app.exe` runs on a clean
 machine with no Visual C++ Redistributable installed.
