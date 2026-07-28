@@ -105,8 +105,7 @@ void decrement(uint16_t &timer) {
     }
 }
 
-fx distance_to_wall(const Map &map, fx origin_x, fx origin_y, fx direction_x,
-                    fx direction_y) {
+fx distance_to_wall(const Map &map, fx origin_x, fx origin_y, fx direction_x, fx direction_y) {
     constexpr fx FAR_DISTANCE = MAX_RANGE + 1;
     constexpr fx INFINITE_DISTANCE = std::numeric_limits<fx>::max() / 2;
 
@@ -198,19 +197,16 @@ void player_tick(GameState &gs, const InputFrame &in) {
 
     const int32_t turn_delta = static_cast<int32_t>(in.mouse_dx) * MOUSE_TURN_UNITS +
                                static_cast<int32_t>(in.turn) * KEYBOARD_TURN_UNITS;
-    gs.player.angle =
-        static_cast<angle_t>(static_cast<int32_t>(gs.player.angle) + turn_delta);
+    gs.player.angle = static_cast<angle_t>(static_cast<int32_t>(gs.player.angle) + turn_delta);
 
     const bool sprinting = in.held(InputFrame::Sprint);
     const fx forward = in.move_y >= 0 ? movement_step(FORWARD_STEP, in.move_y, sprinting)
-                                     : movement_step(BACKWARD_STEP, in.move_y, sprinting);
+                                      : movement_step(BACKWARD_STEP, in.move_y, sprinting);
     const fx strafe = movement_step(STRAFE_STEP, in.move_x, sprinting);
     const fx facing_x = fx_cos(gs.player.angle);
     const fx facing_y = fx_sin(gs.player.angle);
-    const fx displacement_x =
-        static_cast<fx>(fx_mul(facing_x, forward) - fx_mul(facing_y, strafe));
-    const fx displacement_y =
-        static_cast<fx>(fx_mul(facing_y, forward) + fx_mul(facing_x, strafe));
+    const fx displacement_x = static_cast<fx>(fx_mul(facing_x, forward) - fx_mul(facing_y, strafe));
+    const fx displacement_y = static_cast<fx>(fx_mul(facing_y, forward) + fx_mul(facing_x, strafe));
 
     const fx previous_x = gs.player.x;
     const fx previous_y = gs.player.y;
@@ -251,8 +247,8 @@ void fire(GameState &gs) {
 
         const fx offset_x = static_cast<fx>(entity.x - gs.player.x);
         const fx offset_y = static_cast<fx>(entity.y - gs.player.y);
-        const int64_t distance_squared = static_cast<int64_t>(offset_x) * offset_x +
-                                         static_cast<int64_t>(offset_y) * offset_y;
+        const int64_t distance_squared =
+            static_cast<int64_t>(offset_x) * offset_x + static_cast<int64_t>(offset_y) * offset_y;
         if (distance_squared > max_range_squared) {
             continue;
         }

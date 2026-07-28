@@ -52,3 +52,72 @@ jobs:
       - name: Test
         working-directory: out/build/${{ matrix.preset }}
         run: ctest -C Release --output-on-failure
+
+      # Demo insurance: a ready-to-run build is attached to every green run, so
+      # presenting never depends on compiling successfully on the day.
+      - name: Package Windows build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/EggHunt | Out-Null
+          Copy-Item out/build/${{ matrix.preset }}/game_app.exe dist/EggHunt/EggHunt.exe
+          Copy-Item README.md, mvp.md dist/EggHunt/
+          Compress-Archive -Path dist/EggHunt/* -DestinationPath dist/egg-hunt-windows-x64.zip -Force
+
+      - name: Verify the packaged exe needs no VC++ redistributable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Import names appear as literal ASCII in the PE, so this needs no
+          # dumpbin and therefore no MSVC developer environment in this step.
+          $ascii = [System.Text.Encoding]::ASCII.GetString(
+            [System.IO.File]::ReadAllBytes("dist/EggHunt/EggHunt.exe"))
+          $hits = @("VCRUNTIME140", "MSVCP140") | Where-Object { $ascii -match $_ }
+          if ($hits) {
+            Write-Error "Packaged exe imports the VC++ redistributable: $($hits -join ', '). It will not start on a clean machine."
+            exit 1
+          }
+          Write-Host "OK: statically linked, no redistributable required."
+
+      - name: Upload Windows build
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: egg-hunt-windows-x64
+          path: dist/egg-hunt-windows-x64.zip
+          retention-days: 90
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned: clang-format output differs between major versions, so an
+      # unpinned installer would fail CI on a machine that changed nothing.
+      - name: Install clang-format
+        run: pip install "clang-format==19.1.5"
+
+      - name: Check formatting
+        run: |
+          find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 \
+            | xargs -0 clang-format --dry-run --Werror
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: egg-hunt-windows-x64
+          path: dist
+
+      # Actions artifacts expire; a Release asset does not. The demo laptop
+      # should be loaded from here, not from a CI run that may have aged out.
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/egg-hunt-windows-x64.zip
+          generate_release_notes: true

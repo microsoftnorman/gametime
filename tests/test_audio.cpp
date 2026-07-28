@@ -14,9 +14,9 @@ namespace {
 
 constexpr int kSampleRate = 44100;
 constexpr std::array<eh::EventType, 7> kEventTypes{
-    eh::EventType::Shot,       eh::EventType::EggHit, eh::EventType::EggDeath,
-    eh::EventType::Pickup,     eh::EventType::PlayerHurt,
-    eh::EventType::Win,        eh::EventType::Lose,
+    eh::EventType::Shot,   eh::EventType::EggHit,     eh::EventType::EggDeath,
+    eh::EventType::Pickup, eh::EventType::PlayerHurt, eh::EventType::Win,
+    eh::EventType::Lose,
 };
 
 constexpr std::size_t samples_for_ms(int milliseconds) {
@@ -59,9 +59,7 @@ constexpr std::array<DurationExpectation, 7> kDurationExpectations{{
 
 } // namespace
 
-TEST_CASE("audio: sound lookup is safe before initialization") {
-    REQUIRE(preinit_lookup_was_safe);
-}
+TEST_CASE("audio: sound lookup is safe before initialization") { REQUIRE(preinit_lookup_was_safe); }
 
 TEST_CASE("audio: every event has synthesized PCM") {
     eh::init_audio_bank();
@@ -152,8 +150,7 @@ TEST_CASE("audio: envelopes keep every start and end quiet") {
         int trailing_peak = 0;
         for (std::size_t i = 0; i < edge_length; ++i) {
             leading_peak = std::max(leading_peak, amplitude(samples[i]));
-            trailing_peak =
-                std::max(trailing_peak, amplitude(samples[samples.size() - 1 - i]));
+            trailing_peak = std::max(trailing_peak, amplitude(samples[samples.size() - 1 - i]));
         }
         REQUIRE(leading_peak < 8000);
         REQUIRE(trailing_peak < 8000);

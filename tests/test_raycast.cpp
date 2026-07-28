@@ -41,17 +41,15 @@ Direction ray_direction(eh::angle_t player_angle, int column) {
     const float plane_x = -direction_y * camera_plane_scale;
     const float plane_y = direction_x * camera_plane_scale;
     const float camera_x =
-        2.0f * (static_cast<float>(column) + 0.5f) / static_cast<float>(eh::Framebuffer::W) -
-        1.0f;
+        2.0f * (static_cast<float>(column) + 0.5f) / static_cast<float>(eh::Framebuffer::W) - 1.0f;
     return {direction_x + plane_x * camera_x, direction_y + plane_y * camera_x};
 }
 
 } // namespace
 
 TEST_CASE("raycast: wall textures are distinct and coordinates wrap safely") {
-    const uint32_t preinit_fallback =
-        eh::sample_wall(eh::Tile::WallBurrow, std::numeric_limits<int>::min(),
-                        std::numeric_limits<int>::max());
+    const uint32_t preinit_fallback = eh::sample_wall(
+        eh::Tile::WallBurrow, std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
     REQUIRE((preinit_fallback >> 24) == 0xffu);
 
     eh::init_textures();
@@ -158,8 +156,8 @@ TEST_CASE("raycast: rendering preserves pixel and depth guards") {
     constexpr float DEPTH_GUARD = -12345.25f;
 
     std::vector<uint32_t> guarded_pixels(PIXEL_COUNT + 2 * GUARD_SIZE, PIXEL_GUARD);
-    std::vector<float> guarded_depth(
-        static_cast<std::size_t>(eh::Framebuffer::W) + 2 * GUARD_SIZE, DEPTH_GUARD);
+    std::vector<float> guarded_depth(static_cast<std::size_t>(eh::Framebuffer::W) + 2 * GUARD_SIZE,
+                                     DEPTH_GUARD);
     eh::Framebuffer framebuffer{guarded_pixels.data() + GUARD_SIZE,
                                 guarded_depth.data() + GUARD_SIZE};
 

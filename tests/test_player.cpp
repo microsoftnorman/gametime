@@ -1,13 +1,13 @@
 #include "core/player.h"
 #include "core/state.h"
 
-#include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <array>
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 
 namespace {
 
@@ -30,9 +30,9 @@ bool overlaps_wall(const eh::GameState &game) {
 }
 
 int event_count(const eh::GameState &game, eh::EventType type) {
-    return static_cast<int>(std::count_if(
-        game.events.begin(), game.events.end(),
-        [type](const eh::GameEvent &event) { return event.type == type; }));
+    return static_cast<int>(
+        std::count_if(game.events.begin(), game.events.end(),
+                      [type](const eh::GameEvent &event) { return event.type == type; }));
 }
 
 } // namespace
@@ -261,4 +261,3 @@ TEST_CASE("player: diagonal movement is deliberately unnormalized") {
     CHECK(diagonal / forward == Catch::Approx(1.288).epsilon(0.01));
     CHECK(diagonal == Catch::Approx(4.12).epsilon(0.015));
 }
-

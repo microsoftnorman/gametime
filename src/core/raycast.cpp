@@ -45,13 +45,11 @@ void fill_background(Framebuffer &fb) {
 
     for (int y = 0; y < Framebuffer::H; ++y) {
         const bool ceiling = y < HORIZON;
-        const float amount =
-            ceiling ? static_cast<float>(y) / static_cast<float>(HORIZON - 1)
-                    : static_cast<float>(y - HORIZON) /
-                          static_cast<float>(Framebuffer::H - HORIZON - 1);
-        const uint32_t color =
-            ceiling ? blend_color(CEILING_TOP, CEILING_HORIZON, amount)
-                    : blend_color(FLOOR_HORIZON, FLOOR_BOTTOM, amount);
+        const float amount = ceiling ? static_cast<float>(y) / static_cast<float>(HORIZON - 1)
+                                     : static_cast<float>(y - HORIZON) /
+                                           static_cast<float>(Framebuffer::H - HORIZON - 1);
+        const uint32_t color = ceiling ? blend_color(CEILING_TOP, CEILING_HORIZON, amount)
+                                       : blend_color(FLOOR_HORIZON, FLOOR_BOTTOM, amount);
 
         for (int x = 0; x < Framebuffer::W; ++x) {
             fb.pixels[y * Framebuffer::W + x] = color;
@@ -64,19 +62,17 @@ RayHit cast_ray(const Map &map, float position_x, float position_y, float ray_di
     int map_x = static_cast<int>(std::floor(position_x));
     int map_y = static_cast<int>(std::floor(position_y));
 
-    const float delta_x =
-        ray_direction_x == 0.0f ? FAR_DEPTH : std::abs(1.0f / ray_direction_x);
-    const float delta_y =
-        ray_direction_y == 0.0f ? FAR_DEPTH : std::abs(1.0f / ray_direction_y);
+    const float delta_x = ray_direction_x == 0.0f ? FAR_DEPTH : std::abs(1.0f / ray_direction_x);
+    const float delta_y = ray_direction_y == 0.0f ? FAR_DEPTH : std::abs(1.0f / ray_direction_y);
 
     const int step_x = ray_direction_x < 0.0f ? -1 : 1;
     const int step_y = ray_direction_y < 0.0f ? -1 : 1;
-    float side_distance_x =
-        ray_direction_x < 0.0f ? (position_x - static_cast<float>(map_x)) * delta_x
-                               : (static_cast<float>(map_x + 1) - position_x) * delta_x;
-    float side_distance_y =
-        ray_direction_y < 0.0f ? (position_y - static_cast<float>(map_y)) * delta_y
-                               : (static_cast<float>(map_y + 1) - position_y) * delta_y;
+    float side_distance_x = ray_direction_x < 0.0f
+                                ? (position_x - static_cast<float>(map_x)) * delta_x
+                                : (static_cast<float>(map_x + 1) - position_x) * delta_x;
+    float side_distance_y = ray_direction_y < 0.0f
+                                ? (position_y - static_cast<float>(map_y)) * delta_y
+                                : (static_cast<float>(map_y + 1) - position_y) * delta_y;
 
     const int max_steps = std::max(1, map.width + map.height + 2);
     for (int step = 0; step < max_steps; ++step) {
@@ -121,8 +117,7 @@ void render_walls(const GameState &gs, Framebuffer &fb) {
 
     for (int column = 0; column < Framebuffer::W; ++column) {
         const float camera_x =
-            2.0f * (static_cast<float>(column) + 0.5f) / static_cast<float>(Framebuffer::W) -
-            1.0f;
+            2.0f * (static_cast<float>(column) + 0.5f) / static_cast<float>(Framebuffer::W) - 1.0f;
         const float ray_direction_x = direction_x + plane_x * camera_x;
         const float ray_direction_y = direction_y + plane_y * camera_x;
         const RayHit hit =
@@ -148,9 +143,8 @@ void render_walls(const GameState &gs, Framebuffer &fb) {
         const int draw_start = std::max(0, wall_top);
         const int draw_end = std::min(Framebuffer::H, wall_bottom);
 
-        float wall_position =
-            hit.side == 0 ? position_y + perpendicular_distance * ray_direction_y
-                          : position_x + perpendicular_distance * ray_direction_x;
+        float wall_position = hit.side == 0 ? position_y + perpendicular_distance * ray_direction_y
+                                            : position_x + perpendicular_distance * ray_direction_x;
         wall_position -= std::floor(wall_position);
         int texture_x =
             std::clamp(static_cast<int>(wall_position * TEXTURE_SIZE), 0, TEXTURE_SIZE - 1);
@@ -159,10 +153,9 @@ void render_walls(const GameState &gs, Framebuffer &fb) {
             texture_x = TEXTURE_SIZE - texture_x - 1;
         }
 
-        const float texture_step = static_cast<float>(TEXTURE_SIZE) /
-                                   static_cast<float>(wall_height);
-        float texture_position =
-            static_cast<float>(draw_start - wall_top) * texture_step;
+        const float texture_step =
+            static_cast<float>(TEXTURE_SIZE) / static_cast<float>(wall_height);
+        float texture_position = static_cast<float>(draw_start - wall_top) * texture_step;
         float brightness = std::clamp(1.0f - perpendicular_distance / 16.0f, 0.25f, 1.0f);
         if (hit.side == 1) {
             brightness *= 0.7f;

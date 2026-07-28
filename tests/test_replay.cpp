@@ -318,9 +318,8 @@ class InputScript {
     std::uint64_t tick_count_ = 0;
 };
 
-eh::InputFrame input(std::int8_t move_x = 0, std::int8_t move_y = 0,
-                     std::int8_t turn = 0, std::int16_t mouse_dx = 0,
-                     std::uint8_t buttons = 0) {
+eh::InputFrame input(std::int8_t move_x = 0, std::int8_t move_y = 0, std::int8_t turn = 0,
+                     std::int16_t mouse_dx = 0, std::uint8_t buttons = 0) {
     eh::InputFrame frame;
     frame.move_x = move_x;
     frame.move_y = move_y;
@@ -503,8 +502,7 @@ TEST_CASE("replay: renderer-side floats are outside the digest boundary") {
 
     REQUIRE(near_view.renderer_wall_depth != far_view.renderer_wall_depth);
     REQUIRE(state_digest(near_view.simulation) == state_digest(far_view.simulation));
-    require_same_state(serialize_state(near_view.simulation),
-                       serialize_state(far_view.simulation));
+    require_same_state(serialize_state(near_view.simulation), serialize_state(far_view.simulation));
 }
 
 TEST_CASE("replay: entity vector order participates in the digest") {

@@ -46,8 +46,8 @@ float integer_scale(int screen_width, int screen_height) {
 }
 
 constexpr std::array<eh::EventType, 7> AUDIBLE_EVENTS{
-    eh::EventType::Shot,       eh::EventType::EggHit, eh::EventType::EggDeath,
-    eh::EventType::Pickup,     eh::EventType::PlayerHurt, eh::EventType::Win,
+    eh::EventType::Shot,   eh::EventType::EggHit,     eh::EventType::EggDeath,
+    eh::EventType::Pickup, eh::EventType::PlayerHurt, eh::EventType::Win,
     eh::EventType::Lose};
 
 // raylib owns playback; game_core only synthesizes PCM. This is the seam.

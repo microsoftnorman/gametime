@@ -37,9 +37,7 @@ int interpolate(int start, int end, std::size_t index, std::size_t count) {
                                     static_cast<int64_t>(count - 1));
 }
 
-int32_t square_wave(uint32_t phase) {
-    return (phase & 0x80000000u) != 0 ? kUnitGain : -kUnitGain;
-}
+int32_t square_wave(uint32_t phase) { return (phase & 0x80000000u) != 0 ? kUnitGain : -kUnitGain; }
 
 int32_t triangle_wave(uint32_t phase) {
     const uint32_t position = phase >> 16;
@@ -49,9 +47,7 @@ int32_t triangle_wave(uint32_t phase) {
     return 98303 - static_cast<int32_t>(position * 2u);
 }
 
-int32_t noise_sample(Rng &rng) {
-    return static_cast<int32_t>(next(rng) >> 16) - 32768;
-}
+int32_t noise_sample(Rng &rng) { return static_cast<int32_t>(next(rng) >> 16) - 32768; }
 
 int32_t scale_sample(int32_t sample, int32_t gain) {
     return static_cast<int32_t>(static_cast<int64_t>(sample) * gain / kUnitGain);
@@ -71,8 +67,7 @@ int32_t decay_gain(std::size_t index, std::size_t count) {
     return ratio_gain(count - 1 - index, count - 1);
 }
 
-int32_t edge_gain(std::size_t index, std::size_t count, std::size_t attack,
-                  std::size_t release) {
+int32_t edge_gain(std::size_t index, std::size_t count, std::size_t attack, std::size_t release) {
     int32_t gain = kUnitGain;
     if (attack > 1 && index < attack) {
         gain = std::min(gain, ratio_gain(index, attack - 1));
@@ -127,9 +122,8 @@ Pcm finish_sound(WorkingSamples samples, int attack_ms, int release_ms, int targ
 
     for (std::size_t i = 0; i < samples.size(); ++i) {
         const int64_t normalized = static_cast<int64_t>(samples[i]) * target_peak / peak;
-        result.samples[i] = static_cast<int16_t>(
-            std::clamp(normalized, -static_cast<int64_t>(target_peak),
-                       static_cast<int64_t>(target_peak)));
+        result.samples[i] = static_cast<int16_t>(std::clamp(
+            normalized, -static_cast<int64_t>(target_peak), static_cast<int64_t>(target_peak)));
     }
     return result;
 }
@@ -231,9 +225,7 @@ Pcm make_square_sequence(int duration_ms, const std::array<int, NoteCount> &freq
     return finish_sound(std::move(samples), 1, 5, target_peak);
 }
 
-Pcm make_pickup() {
-    return make_square_sequence(250, std::array<int, 3>{523, 659, 784}, 16500);
-}
+Pcm make_pickup() { return make_square_sequence(250, std::array<int, 3>{523, 659, 784}, 16500); }
 
 Pcm make_player_hurt() {
     const std::size_t count = samples_for_ms(200);
@@ -252,9 +244,7 @@ Pcm make_player_hurt() {
     return finish_sound(std::move(samples), 2, 12, 18000);
 }
 
-Pcm make_win() {
-    return make_square_sequence(360, std::array<int, 4>{523, 659, 784, 1047}, 17000);
-}
+Pcm make_win() { return make_square_sequence(360, std::array<int, 4>{523, 659, 784, 1047}, 17000); }
 
 Pcm make_lose() {
     const std::size_t count = samples_for_ms(400);
@@ -276,7 +266,7 @@ Pcm make_lose() {
 }
 
 std::array<Pcm, kSoundCount> make_audio_bank() {
-    return {make_shot(),       make_egg_hit(), make_egg_death(), make_pickup(),
+    return {make_shot(),        make_egg_hit(), make_egg_death(), make_pickup(),
             make_player_hurt(), make_win(),     make_lose()};
 }
 

@@ -21,9 +21,7 @@ std::array<Texture, 4> wall_textures{};
 std::once_flag texture_init_flag;
 std::atomic_bool textures_ready{false};
 
-uint8_t channel(int value) {
-    return static_cast<uint8_t>(std::clamp(value, 0, 255));
-}
+uint8_t channel(int value) { return static_cast<uint8_t>(std::clamp(value, 0, 255)); }
 
 uint32_t coordinate_hash(int x, int y, uint32_t seed) {
     uint32_t value = static_cast<uint32_t>(x) * 0x9e3779b9u;
@@ -36,9 +34,7 @@ uint32_t coordinate_hash(int x, int y, uint32_t seed) {
     return value ^ (value >> 16);
 }
 
-std::size_t texel_index(int x, int y) {
-    return static_cast<std::size_t>(y * TEXTURE_SIZE + x);
-}
+std::size_t texel_index(int x, int y) { return static_cast<std::size_t>(y * TEXTURE_SIZE + x); }
 
 uint32_t fallback_color(Tile tile) {
     switch (tile) {
@@ -110,17 +106,14 @@ void generate_pantry(Texture &texture) {
         for (int x = 0; x < TEXTURE_SIZE; ++x) {
             const bool grout = x % TILE_SPAN < 2 || y % TILE_SPAN < 2;
             if (grout) {
-                const int variation =
-                    static_cast<int>(coordinate_hash(x, y, 0x48f1a2c3u) & 7u);
-                texture[texel_index(x, y)] =
-                    rgba(channel(101 + variation), channel(108 + variation),
-                         channel(108 + variation));
+                const int variation = static_cast<int>(coordinate_hash(x, y, 0x48f1a2c3u) & 7u);
+                texture[texel_index(x, y)] = rgba(
+                    channel(101 + variation), channel(108 + variation), channel(108 + variation));
                 continue;
             }
 
             const int variation =
-                static_cast<int>(coordinate_hash(x / TILE_SPAN, y / TILE_SPAN, 0xb5297a4du) &
-                                 15u) -
+                static_cast<int>(coordinate_hash(x / TILE_SPAN, y / TILE_SPAN, 0xb5297a4du) & 15u) -
                 7;
             const int edge_light = (x % TILE_SPAN == 2 || y % TILE_SPAN == 2) ? 9 : 0;
             texture[texel_index(x, y)] =
@@ -145,11 +138,9 @@ void generate_cellar(Texture &texture) {
             }
 
             const int block_column = (x + row_offset) / BLOCK_WIDTH;
-            const int block_tone = static_cast<int>(
-                                       coordinate_hash(block_column, block_row, 0x6d2b79f5u) & 31u) -
-                                   15;
-            const int grain =
-                static_cast<int>(coordinate_hash(x, y, 0x27d4eb2fu) & 7u) - 3;
+            const int block_tone =
+                static_cast<int>(coordinate_hash(block_column, block_row, 0x6d2b79f5u) & 31u) - 15;
+            const int grain = static_cast<int>(coordinate_hash(x, y, 0x27d4eb2fu) & 7u) - 3;
             texture[texel_index(x, y)] =
                 rgba(channel(94 + block_tone + grain), channel(101 + block_tone + grain),
                      channel(108 + block_tone + grain));
@@ -164,18 +155,15 @@ void generate_basket(Texture &texture) {
     for (int y = 0; y < TEXTURE_SIZE; ++y) {
         for (int x = 0; x < TEXTURE_SIZE; ++x) {
             const bool vertical_over = ((x / STRAND_WIDTH) + (y / STRAND_WIDTH)) % 2 == 0;
-            const int strand_position =
-                vertical_over ? x % STRAND_WIDTH : y % STRAND_WIDTH;
-            const int grain =
-                static_cast<int>(coordinate_hash(x, y, 0xa24baed4u) & 7u) - 3;
+            const int strand_position = vertical_over ? x % STRAND_WIDTH : y % STRAND_WIDTH;
+            const int grain = static_cast<int>(coordinate_hash(x, y, 0xa24baed4u) & 7u) - 3;
             int light = STRAND_PROFILE[static_cast<std::size_t>(strand_position)] + grain;
             if (!vertical_over) {
                 light -= 8;
             }
 
             texture[texel_index(x, y)] =
-                rgba(channel(174 + light), channel(111 + light * 2 / 3),
-                     channel(47 + light / 3));
+                rgba(channel(174 + light), channel(111 + light * 2 / 3), channel(47 + light / 3));
         }
     }
 }
