@@ -223,6 +223,55 @@ TEST_CASE("raycast: open east corridor is deeper than the nearby north wall") {
     REQUIRE(corridor_distance > near_wall_distance);
 }
 
+TEST_CASE("raycast: walls facing along Y are shaded darker than walls facing along X") {
+    eh::GameState game;
+    eh::reset(game, 0x1234567u);
+    eh::init_textures();
+    TestFramebuffer target;
+
+    // From the spawn at (3.5, 3.5) the west border wall and the north border
+    // wall are both exactly 2.5 tiles away. Distance shading is therefore
+    // identical for the two views and wall height is identical, so the only
+    // variable left is which axis the wall face is perpendicular to. Both views
+    // also sweep the same 3.2-tile span of wall across the FOV, so they sample a
+    // comparable spread of texture columns.
+    constexpr int BAND = 40;
+    constexpr int FIRST_ROW = 150;
+    constexpr int LAST_ROW = 210;
+
+    auto mean_wall_luma = [&](double degrees) {
+        game.player.angle = eh::angle_from_deg(degrees);
+        eh::render_walls(game, target.framebuffer);
+        double total = 0.0;
+        int samples = 0;
+        for (int column = eh::Framebuffer::W / 2 - BAND; column < eh::Framebuffer::W / 2 + BAND;
+             ++column) {
+            REQUIRE(std::abs(target.depth[static_cast<std::size_t>(column)] - 2.5f) < 0.001f);
+            for (int row = FIRST_ROW; row < LAST_ROW; ++row) {
+                const uint32_t pixel =
+                    target.pixels[static_cast<std::size_t>(row) * eh::Framebuffer::W +
+                                  static_cast<std::size_t>(column)];
+                total += static_cast<double>((pixel >> 16) & 0xffu) +
+                         static_cast<double>((pixel >> 8) & 0xffu) +
+                         static_cast<double>(pixel & 0xffu);
+                ++samples;
+            }
+        }
+        return total / static_cast<double>(samples);
+    };
+
+    const double x_face = mean_wall_luma(180.0); // west border, crosses an X grid line
+    const double y_face = mean_wall_luma(270.0); // north border, crosses a Y grid line
+
+    // Both faces are lit, but the Y face carries the 0.7 side factor. Asserted as
+    // a ratio rather than absolute values so it survives any texture retouch.
+    REQUIRE(x_face > 0.0);
+    REQUIRE(y_face < x_face);
+    const double ratio = y_face / x_face;
+    REQUIRE(ratio > 0.6);
+    REQUIRE(ratio < 0.8);
+}
+
 TEST_CASE("raycast: rendering preserves pixel and depth guards") {
     constexpr std::size_t GUARD_SIZE = 37;
     constexpr uint32_t PIXEL_GUARD = 0x5ac39e71u;
