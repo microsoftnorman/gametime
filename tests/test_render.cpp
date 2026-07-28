@@ -4,6 +4,7 @@
 #include "core/sprites.h"
 #include "core/state.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
@@ -115,4 +116,74 @@ TEST_CASE("render: HUD-last ordering is observable, not an unenforced convention
     eh::render_frame(state, produced.framebuffer);
     CHECK(produced.pixels == hud_last.pixels);
     CHECK(produced.pixels != hud_before_weapon.pixels);
+}
+
+// Nothing connected input to pixels. tick() was exercised in test_replay and
+// test_smoke, render_frame() only here, and no test called both: the loop the
+// player actually experiences -- press W, the world moves -- was never run end
+// to end. The player workstream said as much, reporting that its game_app check
+// was launch-only and could not prove visible world motion.
+
+TEST_CASE("render: walking forward moves the rendered world by the distance walked") {
+    eh::GameState game;
+    eh::InputFrame start;
+    start.buttons = eh::InputFrame::Start;
+    eh::tick(game, start);
+    REQUIRE(game.screen == eh::Screen::Playing);
+
+    // Face the long corridor so the wall ahead has room to approach.
+    game.player.angle = eh::angle_from_deg(0.0);
+    const float start_x = eh::fx_to_float(game.player.x);
+
+    Target before;
+    eh::render_frame(game, before.framebuffer);
+    const float depth_before = before.depth[eh::Framebuffer::W / 2];
+    REQUIRE(depth_before > 2.0f);
+
+    eh::InputFrame walking;
+    walking.move_y = 1;
+    for (int step = 0; step < 30; ++step) {
+        eh::tick(game, walking);
+    }
+    REQUIRE(game.screen == eh::Screen::Playing);
+
+    Target after;
+    eh::render_frame(game, after.framebuffer);
+    const float depth_after = after.depth[eh::Framebuffer::W / 2];
+
+    const float walked = eh::fx_to_float(game.player.x) - start_x;
+    REQUIRE(walked > 0.5f);
+
+    // The magnitude is the assertion. "The frame changed" would also pass if the
+    // renderer read a stale camera, scaled the world wrongly, or if input reached
+    // the simulation but never the screen. The wall must close by exactly the
+    // distance the simulation actually travelled.
+    REQUIRE(std::fabs((depth_before - depth_after) - walked) < 0.01f);
+    REQUIRE(before.pixels != after.pixels);
+}
+
+TEST_CASE("render: idle input leaves the camera exactly where it was") {
+    eh::GameState game;
+    eh::InputFrame start;
+    start.buttons = eh::InputFrame::Start;
+    eh::tick(game, start);
+    game.player.angle = eh::angle_from_deg(0.0);
+
+    Target before;
+    eh::render_frame(game, before.framebuffer);
+    const float depth_before = before.depth[eh::Framebuffer::W / 2];
+
+    const eh::InputFrame idle;
+    for (int step = 0; step < 30; ++step) {
+        eh::tick(game, idle);
+    }
+
+    Target after;
+    eh::render_frame(game, after.framebuffer);
+
+    // Eggs keep chasing, so the picture legitimately changes. The camera must not.
+    // This is the polarity and drift guard for the test above: a renderer that
+    // advanced on its own, or input read with the wrong sign, would move this.
+    REQUIRE(after.depth[eh::Framebuffer::W / 2] == depth_before);
+    REQUIRE(eh::fx_to_float(game.player.x) == Catch::Approx(3.5f));
 }
