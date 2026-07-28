@@ -139,3 +139,37 @@ TEST_CASE("audio: envelopes keep every start and end quiet") {
         REQUIRE(trailing_peak < 8000);
     }
 }
+
+TEST_CASE("audio: every sound materially decays across its duration") {
+    eh::init_audio_bank();
+
+    for (const eh::EventType type : kEventTypes) {
+        CAPTURE(static_cast<int>(type));
+        const auto &samples = eh::sound_for(type).samples;
+        const std::size_t window = samples.size() / 10;
+        int64_t starting_amplitude = 0;
+        int64_t ending_amplitude = 0;
+        for (std::size_t i = 0; i < window; ++i) {
+            starting_amplitude += amplitude(samples[i]);
+            ending_amplitude += amplitude(samples[samples.size() - window + i]);
+        }
+
+        REQUIRE(starting_amplitude > 0);
+        REQUIRE(ending_amplitude * 10 < starting_amplitude);
+    }
+}
+
+TEST_CASE("audio: every sound is centered around zero") {
+    eh::init_audio_bank();
+
+    for (const eh::EventType type : kEventTypes) {
+        CAPTURE(static_cast<int>(type));
+        const auto &samples = eh::sound_for(type).samples;
+        int64_t sum = 0;
+        for (const int16_t sample : samples) {
+            sum += sample;
+        }
+        const int64_t absolute_sum = sum < 0 ? -sum : sum;
+        REQUIRE(absolute_sum < static_cast<int64_t>(samples.size()) * 32);
+    }
+}

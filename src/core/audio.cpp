@@ -93,8 +93,24 @@ void apply_edge_envelope(WorkingSamples &samples, int attack_ms, int release_ms)
     }
 }
 
+void remove_dc_offset(WorkingSamples &samples) {
+    if (samples.size() <= 2) {
+        return;
+    }
+
+    int64_t sum = 0;
+    for (const int32_t sample : samples) {
+        sum += sample;
+    }
+    const int32_t offset = static_cast<int32_t>(sum / static_cast<int64_t>(samples.size() - 2));
+    for (std::size_t i = 1; i + 1 < samples.size(); ++i) {
+        samples[i] -= offset;
+    }
+}
+
 Pcm finish_sound(WorkingSamples samples, int attack_ms, int release_ms, int target_peak) {
     apply_edge_envelope(samples, attack_ms, release_ms);
+    remove_dc_offset(samples);
 
     int64_t peak = 0;
     for (const int32_t sample : samples) {
@@ -178,6 +194,16 @@ Pcm make_egg_death() {
     return finish_sound(std::move(samples), 2, 15, 18000);
 }
 
+int32_t articulated_note_gain(std::size_t index, std::size_t count, std::size_t attack) {
+    attack = std::min(attack, count - 1);
+    if (attack > 1 && index < attack) {
+        return ratio_gain(index, attack - 1);
+    }
+
+    const int32_t linear_decay = ratio_gain(count - 1 - index, count - 1 - attack);
+    return scale_sample(linear_decay, linear_decay);
+}
+
 template <std::size_t NoteCount>
 Pcm make_square_sequence(int duration_ms, const std::array<int, NoteCount> &frequencies,
                          int target_peak) {
@@ -186,7 +212,6 @@ Pcm make_square_sequence(int duration_ms, const std::array<int, NoteCount> &freq
     uint32_t phase = 0;
     std::size_t previous_note = NoteCount;
     const std::size_t note_attack = samples_for_ms(2);
-    const std::size_t note_release = samples_for_ms(7);
 
     for (std::size_t i = 0; i < count; ++i) {
         const std::size_t note = std::min(i * NoteCount / count, NoteCount - 1);
@@ -198,7 +223,7 @@ Pcm make_square_sequence(int duration_ms, const std::array<int, NoteCount> &freq
         }
 
         const int32_t note_gain =
-            edge_gain(i - note_start, note_end - note_start, note_attack, note_release);
+            articulated_note_gain(i - note_start, note_end - note_start, note_attack);
         samples[i] = scale_sample(square_wave(phase), note_gain);
         phase += phase_step(frequencies[note]);
     }
