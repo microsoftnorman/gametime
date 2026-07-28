@@ -176,6 +176,70 @@ TEST_CASE("player: an unobstructed egg takes exactly 34 damage without changing 
     REQUIRE(game.events.back().entity_id == egg.id);
 }
 
+TEST_CASE("player: bob is a normalized phase advanced only by real displacement") {
+    // Two workstreams read this field differently at integration: the producer writes a
+    // normalized 0..1 cycle in Q12, while a radians reading sweeps only about one radian
+    // before wrapping. The consumer side is pinned in test_sprites.cpp; this pins the
+    // producer, so a violation names the field instead of surfacing as an opaque replay
+    // digest mismatch.
+    constexpr eh::fx BOB_STEP = eh::FX_ONE / 12;
+    REQUIRE(BOB_STEP == 341);
+
+    eh::GameState game;
+    eh::reset(game, 1);
+    game.player.angle = eh::angle_from_deg(0.0);
+    REQUIRE(game.player.bob == 0);
+
+    eh::InputFrame walking;
+    walking.move_y = 1;
+
+    const eh::fx before_x = game.player.x;
+    eh::player_tick(game, walking);
+    REQUIRE(game.player.x != before_x);
+    REQUIRE(game.player.bob == BOB_STEP);
+
+    // The step truncates, so twelve ticks reaches 4092 rather than wrapping cleanly to
+    // zero: the phase drifts slightly on every cycle. Assert the modular arithmetic, not
+    // a tidy twelve-tick period that does not actually exist.
+    for (int tick = 2; tick <= 40; ++tick) {
+        eh::player_tick(game, walking);
+        REQUIRE(game.player.bob == static_cast<eh::fx>((BOB_STEP * tick) % eh::FX_ONE));
+        REQUIRE(game.player.bob >= 0);
+        REQUIRE(game.player.bob < eh::FX_ONE);
+    }
+
+    // Standing still holds the phase. There is no decay and no reset to zero.
+    const eh::fx held = game.player.bob;
+    REQUIRE(held != 0);
+    const eh::InputFrame idle;
+    for (int tick = 0; tick < 5; ++tick) {
+        eh::player_tick(game, idle);
+    }
+    REQUIRE(game.player.bob == held);
+}
+
+TEST_CASE("player: bob does not advance while movement is fully blocked") {
+    eh::GameState game;
+    eh::reset(game, 1);
+    game.player.x = eh::fx_from_int(8) + eh::FX_ONE / 2;
+    game.player.y = eh::fx_from_int(3) + PLAYER_RADIUS;
+    game.player.angle = eh::angle_from_deg(270.0);
+    game.player.bob = eh::FX_ONE / 3;
+
+    const eh::fx starting_x = game.player.x;
+    const eh::fx starting_y = game.player.y;
+    eh::InputFrame walking;
+    walking.move_y = 1;
+    for (int tick = 0; tick < 10; ++tick) {
+        eh::player_tick(game, walking);
+    }
+
+    // Held against a wall the player never displaces, so the weapon must not bob.
+    REQUIRE(game.player.x == starting_x);
+    REQUIRE(game.player.y == starting_y);
+    REQUIRE(game.player.bob == eh::FX_ONE / 3);
+}
+
 TEST_CASE("player: identical fixed-point input sequences are deterministic") {
     std::array<eh::InputFrame, 240> inputs{};
     for (std::size_t tick = 0; tick < inputs.size(); ++tick) {
