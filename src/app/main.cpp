@@ -45,11 +45,59 @@ float integer_scale(int screen_width, int screen_height) {
     return available >= 1.0f ? std::floor(available) : available;
 }
 
+constexpr std::array<eh::EventType, 7> AUDIBLE_EVENTS{
+    eh::EventType::Shot,       eh::EventType::EggHit, eh::EventType::EggDeath,
+    eh::EventType::Pickup,     eh::EventType::PlayerHurt, eh::EventType::Win,
+    eh::EventType::Lose};
+
+// raylib owns playback; game_core only synthesizes PCM. This is the seam.
+struct SoundBank {
+    std::array<Sound, AUDIBLE_EVENTS.size()> sounds{};
+    std::array<bool, AUDIBLE_EVENTS.size()> loaded{};
+
+    void load() {
+        for (std::size_t i = 0; i < AUDIBLE_EVENTS.size(); ++i) {
+            const eh::Pcm &pcm = eh::sound_for(AUDIBLE_EVENTS[i]);
+            if (pcm.samples.empty()) {
+                continue;
+            }
+            Wave wave{};
+            wave.frameCount = static_cast<unsigned int>(pcm.samples.size());
+            wave.sampleRate = 44100;
+            wave.sampleSize = 16;
+            wave.channels = 1;
+            // LoadSoundFromWave copies the data, so this temporary buffer is safe.
+            wave.data = const_cast<int16_t *>(pcm.samples.data());
+            sounds[i] = LoadSoundFromWave(wave);
+            loaded[i] = true;
+        }
+    }
+
+    void play(eh::EventType type) const {
+        for (std::size_t i = 0; i < AUDIBLE_EVENTS.size(); ++i) {
+            if (AUDIBLE_EVENTS[i] == type && loaded[i]) {
+                PlaySound(sounds[i]);
+                return;
+            }
+        }
+    }
+
+    void unload() {
+        for (std::size_t i = 0; i < AUDIBLE_EVENTS.size(); ++i) {
+            if (loaded[i]) {
+                UnloadSound(sounds[i]);
+                loaded[i] = false;
+            }
+        }
+    }
+};
+
 } // namespace
 
 int main() {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "EGG HUNT");
+    InitAudioDevice();
     SetExitKey(KEY_NULL);
     SetTargetFPS(eh::TICKS_PER_SECOND);
 
@@ -65,6 +113,9 @@ int main() {
 
     eh::init_textures();
     eh::init_audio_bank();
+
+    SoundBank audio;
+    audio.load();
 
     eh::GameState game;
     bool mouse_captured = false;
@@ -138,6 +189,19 @@ int main() {
             const eh::Screen previous_screen = game.screen;
             eh::tick(game, tick_input);
 
+            // Events are cleared at the START of each tick, so drain them here,
+            // inside the loop - not after it, or fast frames would lose sounds.
+            // One play per type per tick keeps repeats from stacking into clipping.
+            uint8_t played_this_tick = 0;
+            for (const eh::GameEvent &event : game.events) {
+                const auto bit = static_cast<uint8_t>(1u << static_cast<uint8_t>(event.type));
+                if ((played_this_tick & bit) != 0) {
+                    continue;
+                }
+                played_this_tick = static_cast<uint8_t>(played_this_tick | bit);
+                audio.play(event.type);
+            }
+
             pending_mouse_dx = 0;
             pending_edge_buttons = 0;
             accumulator -= TICK_SECONDS;
@@ -175,7 +239,9 @@ int main() {
     if (mouse_captured) {
         release_mouse(mouse_captured);
     }
+    audio.unload();
     UnloadTexture(texture);
+    CloseAudioDevice();
     CloseWindow();
     return 0;
 }
