@@ -17,6 +17,30 @@ Build a demoable C++ video game, fast, that shows off real systems programming (
 | Determinism | **Fixed-point** for gameplay state | Float digests are not stable across MSVC/GCC. Renderer keeps floats; simulation does not. |
 | Visual tests | Invariant tests, **not** frame hashes | Frame hashing is brittle across compilers — one-pixel wall shifts nuke the hash. |
 
+## Language policy
+
+The point of this project is to demo **C++**. That constraint is binding, so it is written down rather than assumed.
+
+**Everything that ships in the binary is C++20.** No exceptions.
+
+- All game code — simulation, renderer, audio synthesis, map parsing, tests — is C++20.
+- No embedded scripting language (no Lua, no Python bindings, no config DSL).
+- **No code generation step.** Nothing may sit between source and binary except the compiler. If a tool generates content, its output is committed as C++ source and the tool is not part of the build.
+- No third-party dependency that drags in another runtime. raylib (C) and Catch2 (C++) are the only permitted deps for MVP; linking C is fine, shipping a Python/Node runtime is not.
+
+**Permitted non-C++**, strictly outside the compile path:
+
+| Thing | Language | Why it's fine |
+|---|---|---|
+| `CMakeLists.txt`, `CMakePresets.json` | CMake / JSON | Build definition, not program code |
+| `.github/workflows/*.yml` | YAML | CI definition |
+| `.clang-format`, `.gitignore` | config | Tooling config |
+| Design-time authoring tools | any | See below |
+
+**Design-time tools** (e.g. the level generator that produced `burrow_01`) may be written in any language, but they are **not part of the build**. They run on a developer's machine, a human commits their output as C++ source, and the build never invokes them. A fresh clone must build with nothing installed but a C++ compiler and CMake.
+
+*Rationale:* the demo's credibility rests on "this is real C++." A Python step in the build path — even a trivial one — undermines that, and adds a runtime dependency on the presentation laptop. See Demo-day rules.
+
 ## Architecture
 
 ```

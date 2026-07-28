@@ -4,6 +4,8 @@ The smallest thing that is a **complete, playable game**: you spawn, you fight, 
 
 Everything here has concrete numbers so it can be built without further design decisions. Tuning values are starting points, not gospel — they exist so nobody has to invent them mid-build.
 
+> **Language:** all of it is **C++20**. Every line that ends up in the binary — simulation, renderer, audio synthesis, map parsing, tests — is C++, with no code generation step and no embedded scripting. CMake and CI YAML are the only non-C++ files. See [Language policy](./requirements.md#language-policy).
+
 ---
 
 ## 1. The game in one paragraph
@@ -17,6 +19,7 @@ You are the Easter Bunny, on foot, in a four-room burrow rendered by a hand-writ
 The MVP ships when **all** of these are true:
 
 - [ ] Launches from a double-clicked `.exe` on a machine with no dev tools installed
+- [ ] A fresh clone builds with **nothing installed but a C++ compiler and CMake**
 - [ ] Title screen → play → win *and* lose states → restart, with no relaunch needed
 - [ ] Mouselook + WASD feel correct; mouse releases on `Esc` and on focus loss
 - [ ] You cannot walk through walls, and you cannot get stuck on a corner
@@ -68,6 +71,8 @@ Mouse is captured on entering `Playing` and released on `Esc` or window focus lo
 ## 5. The level
 
 One level, `burrow_01`, embedded as a string constant in the binary. 24×18 tiles. Validated as fully enclosed with all 248 open cells reachable from spawn.
+
+The layout below was produced by a throwaway design-time script and is committed as **static C++ source**. That script is not part of the build — see [Language policy](./requirements.md#language-policy). The runtime validator described at the end of this section is separate, and is written in C++.
 
 ```
 ########################
