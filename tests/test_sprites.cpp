@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 namespace {
@@ -79,6 +80,34 @@ bool is_flash_pixel(uint32_t color) {
     return red > 245u && green > 195u && blue < 120u;
 }
 
+struct PixelBounds {
+    int left = eh::Framebuffer::W;
+    int top = eh::Framebuffer::H;
+    int right = -1;
+    int bottom = -1;
+
+    bool valid() const { return right >= left && bottom >= top; }
+};
+
+PixelBounds modified_bounds(const GuardedFramebuffer &buffer) {
+    PixelBounds bounds;
+    for (int y = 0; y < eh::Framebuffer::H; ++y) {
+        for (int x = 0; x < eh::Framebuffer::W; ++x) {
+            const std::size_t index =
+                static_cast<std::size_t>(y) * eh::Framebuffer::W + static_cast<std::size_t>(x);
+            if (buffer.framebuffer.pixels[index] == BACKGROUND) {
+                continue;
+            }
+
+            bounds.left = std::min(bounds.left, x);
+            bounds.top = std::min(bounds.top, y);
+            bounds.right = std::max(bounds.right, x);
+            bounds.bottom = std::max(bounds.bottom, y);
+        }
+    }
+    return bounds;
+}
+
 } // namespace
 
 TEST_CASE("sprites: close billboard writes only inside the framebuffer") {
@@ -141,6 +170,48 @@ TEST_CASE("sprites: equal camera depth uses stable entity id ordering") {
     REQUIRE(first_buffer.pixels() == second_buffer.pixels());
     REQUIRE(first_buffer.guards_intact());
     REQUIRE(second_buffer.guards_intact());
+}
+
+TEST_CASE("sprites: weapon bob is continuous across normalized phase wrap") {
+    eh::GameState start = state_facing_east();
+    start.player.bob = 0;
+    eh::GameState end = start;
+    end.player.bob = eh::FX_ONE - 1;
+
+    GuardedFramebuffer start_buffer;
+    GuardedFramebuffer end_buffer;
+    eh::render_weapon(start, start_buffer.framebuffer);
+    eh::render_weapon(end, end_buffer.framebuffer);
+
+    const PixelBounds start_bounds = modified_bounds(start_buffer);
+    const PixelBounds end_bounds = modified_bounds(end_buffer);
+    REQUIRE(start_bounds.valid());
+    REQUIRE(end_bounds.valid());
+    REQUIRE(std::abs(start_bounds.left - end_bounds.left) <= 1);
+    REQUIRE(std::abs(start_bounds.top - end_bounds.top) <= 1);
+}
+
+TEST_CASE("sprites: weapon bob traverses both horizontal extremes in one normalized cycle") {
+    eh::GameState state = state_facing_east();
+    GuardedFramebuffer rest_buffer;
+    eh::render_weapon(state, rest_buffer.framebuffer);
+    const PixelBounds rest_bounds = modified_bounds(rest_buffer);
+    REQUIRE(rest_bounds.valid());
+
+    int minimum_offset = 0;
+    int maximum_offset = 0;
+    for (int step = 0; step < 12; ++step) {
+        state.player.bob = static_cast<eh::fx>((static_cast<int64_t>(eh::FX_ONE) * step) / 12);
+        GuardedFramebuffer buffer;
+        eh::render_weapon(state, buffer.framebuffer);
+        const PixelBounds bounds = modified_bounds(buffer);
+        REQUIRE(bounds.valid());
+        minimum_offset = std::min(minimum_offset, bounds.left - rest_bounds.left);
+        maximum_offset = std::max(maximum_offset, bounds.left - rest_bounds.left);
+    }
+
+    REQUIRE(minimum_offset <= -4);
+    REQUIRE(maximum_offset >= 4);
 }
 
 TEST_CASE("sprites: weapon stays in bounds and reacts to muzzle flash") {
