@@ -2,10 +2,12 @@
 #include "core/state.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cmath>
 
 namespace {
 
@@ -204,3 +206,59 @@ TEST_CASE("player: identical fixed-point input sequences are deterministic") {
     REQUIRE(first.player.angle == second.player.angle);
     REQUIRE(first.player.bob == second.player.bob);
 }
+
+// --- Coordinator-added at integration -------------------------------------
+// mvp.md section "Tuning" specifies exact move speeds, and nothing asserted
+// them: the nine tests above cover collision, sliding, tunnelling and firing,
+// but never that the player actually travels at the documented rate. A speed
+// regression would have shipped silently.
+
+namespace {
+
+// Distance travelled in one tick from a centred open cell. One tick moves
+// ~0.05 tiles, so with a 0.25 radius this can never reach a wall.
+double tiles_per_second(int8_t move_x, int8_t move_y) {
+    eh::GameState game;
+    eh::reset(game, 77);
+    game.player.x = eh::fx_from_int(game.player.x / eh::FX_ONE) + eh::FX_ONE / 2;
+    game.player.y = eh::fx_from_int(game.player.y / eh::FX_ONE) + eh::FX_ONE / 2;
+    game.player.angle = eh::angle_from_deg(0.0);
+    REQUIRE_FALSE(overlaps_wall(game));
+
+    const eh::fx x0 = game.player.x;
+    const eh::fx y0 = game.player.y;
+
+    eh::InputFrame input;
+    input.move_x = move_x;
+    input.move_y = move_y;
+    eh::player_tick(game, input);
+
+    const double dx = static_cast<double>(game.player.x - x0);
+    const double dy = static_cast<double>(game.player.y - y0);
+    const double tiles = std::sqrt(dx * dx + dy * dy) / static_cast<double>(eh::FX_ONE);
+    return tiles * static_cast<double>(eh::TICKS_PER_SECOND);
+}
+
+} // namespace
+
+TEST_CASE("player: move speeds match the tuning table in mvp.md") {
+    // Fixed-point steps truncate, so allow 1.5% rather than demanding exactness.
+    CHECK(tiles_per_second(0, 1) == Catch::Approx(3.2).epsilon(0.015));  // forward
+    CHECK(tiles_per_second(1, 0) == Catch::Approx(2.6).epsilon(0.015));  // strafe
+    CHECK(tiles_per_second(0, -1) == Catch::Approx(2.0).epsilon(0.015)); // backward
+}
+
+TEST_CASE("player: diagonal movement is deliberately unnormalized") {
+    // Forward and strafe are applied as independent components, so holding
+    // W+D travels sqrt(3.2^2 + 2.6^2) = 4.12 tiles/s -- about 29% faster than
+    // forward alone. mvp.md never specified normalization, and this is exactly
+    // the strafe-run behaviour original Doom shipped, so it is kept on purpose.
+    // Pinned here so a future change to it is a decision, not an accident.
+    const double forward = tiles_per_second(0, 1);
+    const double diagonal = tiles_per_second(1, 1);
+
+    REQUIRE(diagonal > forward);
+    CHECK(diagonal / forward == Catch::Approx(1.288).epsilon(0.01));
+    CHECK(diagonal == Catch::Approx(4.12).epsilon(0.015));
+}
+
