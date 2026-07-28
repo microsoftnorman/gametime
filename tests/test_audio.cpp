@@ -118,6 +118,26 @@ TEST_CASE("audio: sounds have bounded duration and headroom") {
     }
 }
 
+TEST_CASE("audio: every sound has meaningful dynamic shape") {
+    eh::init_audio_bank();
+
+    for (const eh::EventType type : kEventTypes) {
+        CAPTURE(static_cast<int>(type));
+        const auto &samples = eh::sound_for(type).samples;
+        int peak = 0;
+        int64_t squared_sum = 0;
+        for (const int16_t sample : samples) {
+            const int magnitude = amplitude(sample);
+            peak = std::max(peak, magnitude);
+            squared_sum += static_cast<int64_t>(magnitude) * magnitude;
+        }
+
+        const int64_t scaled_peak_energy =
+            4 * static_cast<int64_t>(peak) * peak * static_cast<int64_t>(samples.size());
+        REQUIRE(scaled_peak_energy >= 9 * squared_sum);
+    }
+}
+
 TEST_CASE("audio: envelopes keep every start and end quiet") {
     eh::init_audio_bank();
 
