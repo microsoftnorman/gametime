@@ -28,6 +28,20 @@ int amplitude(int16_t sample) {
     return promoted < 0 ? -promoted : promoted;
 }
 
+// FNV-1a over explicitly little-endian sample bytes, so Windows and Linux must
+// produce the same number rather than merely each being self-consistent.
+std::uint64_t pcm_digest(const std::vector<int16_t> &samples) {
+    std::uint64_t hash = 0xcbf29ce484222325ull;
+    for (const int16_t sample : samples) {
+        const std::uint16_t bits = static_cast<std::uint16_t>(sample);
+        for (int shift = 0; shift < 16; shift += 8) {
+            hash ^= static_cast<std::uint8_t>(bits >> shift);
+            hash *= 0x100000001b3ull;
+        }
+    }
+    return hash;
+}
+
 const bool preinit_lookup_was_safe = [] {
     const eh::Pcm *const empty = &eh::sound_for(kEventTypes.front());
     if (!empty->samples.empty()) {
@@ -214,7 +228,12 @@ TEST_CASE("audio: every event has synthesized PCM") {
     }
 }
 
-TEST_CASE("audio: initialization is idempotent and byte deterministic") {
+// Named for what it actually proves. The pointer-identity assertion below is the
+// real content: a second init_audio_bank() must not regenerate or reallocate the
+// bank. The memcmp that follows is therefore comparing the bank against a
+// snapshot of itself and cannot fail -- reproducibility is proved by the golden
+// digests further down, not here.
+TEST_CASE("audio: initialization is idempotent and does not reallocate") {
     eh::init_audio_bank();
 
     std::array<std::vector<int16_t>, kEventTypes.size()> snapshots;
@@ -234,6 +253,37 @@ TEST_CASE("audio: initialization is idempotent and byte deterministic") {
         REQUIRE(samples.size() == snapshots[i].size());
         REQUIRE(std::memcmp(samples.data(), snapshots[i].data(),
                             samples.size() * sizeof(int16_t)) == 0);
+    }
+}
+
+// The memcmp in the test above proves idempotence, not reproducibility, and the
+// distinction is not academic. Because init_audio_bank() is guarded, the second
+// call is a no-op and that memcmp compares the bank against a snapshot of
+// itself -- it cannot fail for any generator, deterministic or not. Replacing
+// the noise seed with a completely different constant, which changes the actual
+// waveform of every noise-based sound, was verified to pass the entire suite
+// before these digests existed.
+//
+// These goldens are what make "byte deterministic" true: a fixed expected value
+// that must hold in every process, on every platform, so CI's Linux leg turns
+// the cross-platform determinism claim into an assertion. A failure here after a
+// deliberate audio change is expected and correct -- re-derive and update.
+TEST_CASE("audio: the synthesized bank is byte-for-byte reproducible") {
+    eh::init_audio_bank();
+
+    constexpr std::array<std::uint64_t, kEventTypes.size()> golden{
+        0x184674438b3daf45ull, // Shot
+        0xf6657813fe14fd56ull, // EggHit
+        0x2d887fe771ec2705ull, // EggDeath
+        0x387aeb30a0742241ull, // Pickup
+        0xa057e37ea460bdd8ull, // PlayerHurt
+        0x7f1da51e1d91213cull, // Win
+        0x4d888bd07d05d192ull, // Lose
+    };
+
+    for (std::size_t i = 0; i < kEventTypes.size(); ++i) {
+        CAPTURE(i);
+        CHECK(pcm_digest(eh::sound_for(kEventTypes[i]).samples) == golden[i]);
     }
 }
 
