@@ -16,6 +16,7 @@ namespace {
 
 constexpr int SPRITE_TEXTURE_SIZE = 48;
 constexpr float PI = 3.14159265358979323846f;
+constexpr float TWO_PI = 2.0f * PI;
 constexpr float FOV_RADIANS = 66.0f * PI / 180.0f;
 constexpr float NEAR_PLANE = 0.05f;
 constexpr float CAMERA_HEIGHT = 0.5f;
@@ -566,7 +567,7 @@ void render_weapon(const GameState &gs, Framebuffer &fb) {
     constexpr int WEAPON_WIDTH = 286;
     constexpr int WEAPON_HEIGHT = 184;
 
-    const float bob_phase = fx_to_float(gs.player.bob);
+    const float bob_phase = fx_to_float(gs.player.bob) * TWO_PI;
     const float bob_x = std::sin(bob_phase) * 5.0f;
     const float bob_y = std::abs(std::sin(bob_phase * 2.0f)) * 4.0f;
 
