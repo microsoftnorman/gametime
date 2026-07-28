@@ -98,6 +98,17 @@ TEST_CASE("entities: egg death resolves exactly once") {
     REQUIRE(event_count(gs, eh::EventType::EggDeath) == 1);
 }
 
+TEST_CASE("entities: EggHit authoritatively sets a nine tick flash") {
+    eh::GameState gs = fresh_game();
+    eh::Entity &egg = entity_of_type(gs, eh::EntityType::Egg);
+    disable_other_eggs(gs, egg.id);
+    gs.events.push_back({eh::EventType::EggHit, egg.id});
+
+    eh::entities_tick(gs);
+
+    REQUIRE(egg.hit_flash == 9);
+}
+
 TEST_CASE("entities: line of sight gates idle eggs") {
     eh::GameState gs = fresh_game();
     eh::Entity &visible = entity_of_type(gs, eh::EntityType::Egg, 0);
