@@ -14,7 +14,6 @@ namespace {
 
 constexpr float PI = 3.14159265358979323846f;
 constexpr float TWO_PI = 2.0f * PI;
-constexpr float FOV_RADIANS = 66.0f * PI / 180.0f;
 constexpr float MIN_DEPTH = 0.0001f;
 constexpr float FAR_DEPTH = 1.0e6f;
 constexpr int TEXTURE_SIZE = 64;

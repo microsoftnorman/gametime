@@ -13,6 +13,14 @@ struct Framebuffer {
     float *depth;     // W entries, perpendicular camera distance per column
 };
 
+// Horizontal field of view, shared by every renderer that projects world space
+// onto the screen. Walls and sprites must use one camera: if these drift apart
+// billboards detach from the geometry they stand on, which is why this lives
+// beside the screen dimensions instead of being redeclared per translation
+// unit. A 14 degree divergence between two private copies was verified to pass
+// the entire test suite, so the duplication is removed rather than asserted.
+inline constexpr float FOV_RADIANS = 66.0f * 3.14159265358979323846f / 180.0f;
+
 inline uint32_t rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
     return static_cast<uint32_t>(r) | (static_cast<uint32_t>(g) << 8) |
            (static_cast<uint32_t>(b) << 16) | (static_cast<uint32_t>(a) << 24);

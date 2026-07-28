@@ -17,7 +17,6 @@ namespace {
 constexpr int SPRITE_TEXTURE_SIZE = 48;
 constexpr float PI = 3.14159265358979323846f;
 constexpr float TWO_PI = 2.0f * PI;
-constexpr float FOV_RADIANS = 66.0f * PI / 180.0f;
 constexpr float NEAR_PLANE = 0.05f;
 constexpr float CAMERA_HEIGHT = 0.5f;
 

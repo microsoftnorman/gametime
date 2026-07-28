@@ -2,10 +2,12 @@
 #include "core/sprites.h"
 #include "core/state.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -140,6 +142,38 @@ TEST_CASE("sprites: billboard in open space modifies pixels") {
 
     REQUIRE_FALSE(buffer.pixels_unchanged());
     REQUIRE(buffer.guards_intact());
+}
+
+// A wall and a billboard must project through the same camera. FOV_RADIANS was
+// declared privately in both raycast.cpp and sprites.cpp; setting the sprite
+// copy to 75 degrees while the wall copy stayed at 66 was verified to pass all
+// 68 tests, which would have put every enemy at the wrong screen position
+// relative to the geometry it stands on. The constant is now shared, and this
+// pins sprite projection to it so a private copy cannot quietly return.
+//
+// An entity 4.0 tiles ahead and 1.0 tile to the side subtends
+// atan(1/4) = 14.04 degrees. With a 66 degree horizontal FOV across 640
+// columns that lands 320 / tan(33 deg) * (1/4) = 123.2 columns from the centre
+// line; at 75 degrees it would be 104.3. The sign of the lateral axis is left
+// unasserted so this tests the camera, not a handedness convention.
+TEST_CASE("sprites: billboard projection matches the shared camera FOV") {
+    eh::GameState state = state_facing_east();
+    state.entities.push_back(entity_at(1, eh::EntityType::Egg, 4.0f, 1.0f));
+    GuardedFramebuffer buffer;
+
+    eh::render_sprites(state, buffer.framebuffer);
+
+    const PixelBounds bounds = modified_bounds(buffer);
+    REQUIRE(bounds.valid());
+    REQUIRE(buffer.guards_intact());
+
+    const float centre = 0.5f * static_cast<float>(bounds.left + bounds.right);
+    const float expected_offset = (static_cast<float>(eh::Framebuffer::W) * 0.5f) /
+                                  std::tan(eh::FOV_RADIANS * 0.5f) * (1.0f / 4.0f);
+    const float actual_offset = std::fabs(centre - static_cast<float>(eh::Framebuffer::W) * 0.5f);
+
+    CHECK(expected_offset == Catch::Approx(123.2f).margin(0.5f));
+    CHECK(actual_offset == Catch::Approx(expected_offset).margin(4.0f));
 }
 
 TEST_CASE("sprites: billboard behind the camera is rejected") {
