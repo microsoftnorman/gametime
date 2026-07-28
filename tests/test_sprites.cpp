@@ -248,6 +248,44 @@ TEST_CASE("sprites: weapon bob traverses both horizontal extremes in one normali
     REQUIRE(maximum_offset >= 4);
 }
 
+// Every sprite test above asserts a relational or safety property: stays in
+// bounds, occludes correctly, is visible in the open, orders stably. All of them
+// hold when a billboard renders at a constant size regardless of distance.
+// Replacing the perspective divide with a fixed constant -- so a distant egg is
+// exactly as large as one in your face -- was verified to pass all 79 tests.
+// Perspective on enemies is the difference between a 3D game and a sticker.
+TEST_CASE("sprites: billboards scale inversely with distance") {
+    auto rendered_height = [](float distance) {
+        eh::GameState state = state_facing_east();
+        state.entities.push_back(entity_at(1, eh::EntityType::Egg, distance, 0.0f));
+        GuardedFramebuffer buffer;
+        eh::render_sprites(state, buffer.framebuffer);
+        REQUIRE(buffer.guards_intact());
+        const PixelBounds bounds = modified_bounds(buffer);
+        REQUIRE(bounds.valid());
+        return bounds;
+    };
+
+    const PixelBounds near_bounds = rendered_height(2.0f);
+    const PixelBounds far_bounds = rendered_height(4.0f);
+
+    const float near_height = static_cast<float>(near_bounds.bottom - near_bounds.top + 1);
+    const float far_height = static_cast<float>(far_bounds.bottom - far_bounds.top + 1);
+    const float near_width = static_cast<float>(near_bounds.right - near_bounds.left + 1);
+    const float far_width = static_cast<float>(far_bounds.right - far_bounds.left + 1);
+
+    // Direction first, so the magnitude check below cannot pass vacuously.
+    REQUIRE(near_height > far_height);
+    REQUIRE(near_width > far_width);
+
+    // Halving the distance must double the projected size. The tolerance covers
+    // pixel quantization on a roughly 100 pixel sprite, not a scaling error.
+    CAPTURE(near_height);
+    CAPTURE(far_height);
+    REQUIRE(near_height / far_height == Catch::Approx(2.0f).epsilon(0.05));
+    REQUIRE(near_width / far_width == Catch::Approx(2.0f).epsilon(0.05));
+}
+
 TEST_CASE("sprites: weapon stays in bounds and reacts to muzzle flash") {
     eh::GameState idle = state_facing_east();
     idle.player.bob = eh::fx_from_float(1.25f);
