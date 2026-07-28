@@ -261,3 +261,58 @@ TEST_CASE("player: diagonal movement is deliberately unnormalized") {
     CHECK(diagonal / forward == Catch::Approx(1.288).epsilon(0.01));
     CHECK(diagonal == Catch::Approx(4.12).epsilon(0.015));
 }
+
+TEST_CASE("player: turn rates match the tuning table in mvp.md") {
+    // angle_t is a uint16 turn: 65536 units == one full revolution.
+    constexpr double UNITS_TO_RAD = 6.283185307179586 / 65536.0;
+
+    SECTION("keyboard turn is 2.6 rad/s") {
+        eh::GameState game;
+        eh::reset(game, 91);
+        const eh::angle_t start = game.player.angle;
+
+        eh::InputFrame input;
+        input.turn = 1;
+        for (int tick = 0; tick < eh::TICKS_PER_SECOND; ++tick) {
+            eh::player_tick(game, input);
+        }
+
+        const double radians_per_second =
+            static_cast<double>(static_cast<eh::angle_t>(game.player.angle - start)) * UNITS_TO_RAD;
+        CHECK(radians_per_second == Catch::Approx(2.6).epsilon(0.01));
+    }
+
+    SECTION("mouse is 0.0022 rad per count") {
+        eh::GameState game;
+        eh::reset(game, 92);
+        const eh::angle_t start = game.player.angle;
+
+        eh::InputFrame input;
+        input.mouse_dx = 100;
+        eh::player_tick(game, input);
+
+        const double radians_per_count =
+            static_cast<double>(static_cast<eh::angle_t>(game.player.angle - start)) *
+            UNITS_TO_RAD / 100.0;
+        CHECK(radians_per_count == Catch::Approx(0.0022).epsilon(0.01));
+    }
+
+    SECTION("turning is symmetric and reversible") {
+        eh::GameState game;
+        eh::reset(game, 93);
+        const eh::angle_t start = game.player.angle;
+
+        eh::InputFrame left;
+        left.turn = 1;
+        eh::InputFrame right;
+        right.turn = -1;
+        for (int tick = 0; tick < 25; ++tick) {
+            eh::player_tick(game, left);
+        }
+        REQUIRE(game.player.angle != start);
+        for (int tick = 0; tick < 25; ++tick) {
+            eh::player_tick(game, right);
+        }
+        CHECK(game.player.angle == start);
+    }
+}

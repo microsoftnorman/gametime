@@ -329,6 +329,11 @@ eh::InputFrame input(std::int8_t move_x = 0, std::int8_t move_y = 0, std::int8_t
     return frame;
 }
 
+// The rotation segments below are deliberately asymmetric, and movement follows
+// them, so that the final digest depends on orientation. An earlier version
+// turned equally in both directions and then stood still, which left the whole
+// 600-tick digest blind to turning: halving the keyboard turn rate passed every
+// test in the suite. Keep the net rotation non-zero and keep movement after it.
 InputScript ten_second_script() {
     InputScript script;
     script.hold(30, input(0, 1, 0, 0, eh::InputFrame::Sprint))
@@ -336,11 +341,12 @@ InputScript ten_second_script() {
         .hold(30, input(-1, 0))
         .hold(30, input(1, 0))
         .hold(120, input(0, 0, 1))
-        .hold(120, input(0, 0, -1))
+        .hold(60, input(0, 0, -1))
         .hold(60, input(0, 0, 0, 3))
-        .hold(60, input(0, 0, 0, -3))
+        .hold(30, input(0, 0, 0, -3))
         .pulse(eh::InputFrame::Fire)
-        .hold(119);
+        .hold(60, input(0, 1))
+        .hold(149);
     return script;
 }
 
@@ -348,16 +354,31 @@ struct ReplayResult {
     eh::GameState state;
     CanonicalState canonical;
     std::uint64_t digest;
+    std::uint64_t trajectory;
 };
 
 ReplayResult run_replay(std::uint32_t seed, const InputScript &script) {
     eh::GameState state;
     eh::reset(state, seed);
-    script.for_each_tick([&](const eh::InputFrame &frame) { eh::tick(state, frame); });
+
+    // Fold every intermediate tick into a rolling hash, not just the last one.
+    // A final-state digest is blind to anything transient: hit flashes, hurt
+    // flashes, knockback, muzzle flash, screen shake and every event that has
+    // already decayed or been drained by tick 600. Changing HURT_FLASH_TICKS
+    // from 9 to 12 was verified to leave the final-state digest untouched.
+    std::uint64_t trajectory = FNV_OFFSET_BASIS;
+    script.for_each_tick([&](const eh::InputFrame &frame) {
+        eh::tick(state, frame);
+        const std::uint64_t step = fnv1a(serialize_state(state).bytes);
+        for (int shift = 0; shift < 64; shift += 8) {
+            trajectory ^= static_cast<std::uint8_t>(step >> shift);
+            trajectory *= FNV_PRIME;
+        }
+    });
 
     CanonicalState canonical = serialize_state(state);
     const std::uint64_t digest = fnv1a(canonical.bytes);
-    return {std::move(state), std::move(canonical), digest};
+    return {std::move(state), std::move(canonical), digest, trajectory};
 }
 
 } // namespace
@@ -379,6 +400,47 @@ TEST_CASE("replay: a 600 tick input script is deterministic") {
     REQUIRE(first.digest == fnv1a(first.canonical.bytes));
     REQUIRE(second.digest == fnv1a(second.canonical.bytes));
     require_same_state(first.canonical, second.canonical);
+
+    // Non-vacuity guard. Determinism is trivially satisfied by a simulation
+    // that does nothing, so assert the run actually moved, turned and stayed
+    // in play. This harness was authored while player_tick and entities_tick
+    // were stubs; without these checks it would still pass green if gameplay
+    // regressed back to doing nothing.
+    eh::GameState untouched;
+    eh::reset(untouched, seed);
+    REQUIRE(fnv1a(serialize_state(untouched).bytes) != first.digest);
+    REQUIRE(first.state.screen == eh::Screen::Playing);
+    REQUIRE(first.state.player.angle != untouched.player.angle);
+    REQUIRE(
+        (first.state.player.x != untouched.player.x || first.state.player.y != untouched.player.y));
+
+    // Golden digests.
+    //
+    // Everything above only proves the simulation is self-consistent: it runs
+    // the same script twice through the same binary, so a changed tuning
+    // constant changes both runs identically and the comparison still passes.
+    // Halving KEYBOARD_TURN_UNITS was verified to slip through it untouched.
+    //
+    // Pinning the digests converts this from a determinism check into a
+    // whole-simulation regression detector: any change to movement, turning,
+    // collision, firing, AI, damage, RNG advancement, visual timers or event
+    // emission moves one of these numbers. And because gameplay state is
+    // fixed-point integer maths with explicitly-sized little-endian
+    // serialization, the same values must appear under GCC on Linux -- so CI
+    // turns the cross-platform determinism claim in mvp.md into an assertion
+    // rather than an aspiration.
+    //
+    // A failure here is expected and correct after a deliberate tuning change.
+    // require_same_state names the field that moved; re-run and update.
+    constexpr std::uint64_t golden_digest = 0x6069fa714730d78eull;
+    constexpr std::uint64_t golden_trajectory = 0xf587096a9c0bceeaull;
+    if (first.digest != golden_digest || first.trajectory != golden_trajectory) {
+        WARN("600 tick replay digests: final=0x" << std::hex << first.digest << " trajectory=0x"
+                                                 << first.trajectory << std::dec);
+    }
+    REQUIRE(first.digest == golden_digest);
+    REQUIRE(first.trajectory == golden_trajectory);
+    REQUIRE(second.trajectory == first.trajectory);
 }
 
 TEST_CASE("replay: reset is reproducible and seed-sensitive") {
