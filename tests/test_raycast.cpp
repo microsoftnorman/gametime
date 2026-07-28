@@ -17,7 +17,6 @@
 namespace {
 
 constexpr float PI = 3.14159265358979323846f;
-constexpr float FOV_RADIANS = 66.0f * PI / 180.0f;
 constexpr std::size_t PIXEL_COUNT =
     static_cast<std::size_t>(eh::Framebuffer::W) * static_cast<std::size_t>(eh::Framebuffer::H);
 
@@ -37,7 +36,7 @@ Direction ray_direction(eh::angle_t player_angle, int column) {
         static_cast<float>(player_angle) * 2.0f * PI / static_cast<float>(UINT16_MAX + 1u);
     const float direction_x = std::cos(angle);
     const float direction_y = std::sin(angle);
-    const float camera_plane_scale = std::tan(FOV_RADIANS * 0.5f);
+    const float camera_plane_scale = std::tan(eh::FOV_RADIANS * 0.5f);
     const float plane_x = -direction_y * camera_plane_scale;
     const float plane_y = direction_x * camera_plane_scale;
     const float camera_x =
@@ -70,6 +69,80 @@ TEST_CASE("raycast: wall textures are distinct and coordinates wrap safely") {
     REQUIRE((eh::sample_wall(eh::Tile::WallBasket, std::numeric_limits<int>::min(),
                              std::numeric_limits<int>::max()) >>
              24) == 0xffu);
+}
+
+TEST_CASE("raycast: wall textures carry visible internal contrast") {
+    // Deliberately does NOT call init_textures() first: sampling must produce a real
+    // texture on its own. The distinctness check above compares the four tile types
+    // against each other, which passes even when every texture is a single flat
+    // colour -- exactly what rendered when the lone init call in main.cpp (a file no
+    // test target links) was missing.
+    const std::array<eh::Tile, 4> tiles{eh::Tile::WallBurrow, eh::Tile::WallPantry,
+                                        eh::Tile::WallCellar, eh::Tile::WallBasket};
+
+    for (const eh::Tile tile : tiles) {
+        float min_luma = 1.0e9f;
+        float max_luma = -1.0e9f;
+        std::vector<uint32_t> texels;
+        for (int ty = 0; ty < 64; ++ty) {
+            for (int tx = 0; tx < 64; ++tx) {
+                const uint32_t texel = eh::sample_wall(tile, tx, ty);
+                texels.push_back(texel);
+                const float luma = 0.299f * static_cast<float>(texel & 0xffu) +
+                                   0.587f * static_cast<float>((texel >> 8) & 0xffu) +
+                                   0.114f * static_cast<float>((texel >> 16) & 0xffu);
+                min_luma = std::min(min_luma, luma);
+                max_luma = std::max(max_luma, luma);
+            }
+        }
+        std::sort(texels.begin(), texels.end());
+        texels.erase(std::unique(texels.begin(), texels.end()), texels.end());
+
+        CAPTURE(static_cast<int>(tile));
+        CAPTURE(texels.size());
+        CAPTURE(max_luma - min_luma);
+        REQUIRE(texels.size() > 16);
+        REQUIRE(max_luma - min_luma > 12.0f);
+    }
+}
+
+TEST_CASE("raycast: rendered wall columns vary vertically") {
+    // A single wall column is lit uniformly, so any vertical variation within one
+    // column is texture reaching actual pixels. This is the end-to-end companion to
+    // the texel test above, and it also covers sampling without an explicit init.
+    eh::GameState game;
+    eh::reset(game, 0x1234567u);
+
+    TestFramebuffer target;
+    eh::render_walls(game, target.framebuffer);
+
+    // The closest wall spans the most rows, giving the largest safe sample.
+    int nearest = 0;
+    for (int column = 1; column < eh::Framebuffer::W; ++column) {
+        if (target.depth[static_cast<std::size_t>(column)] <
+            target.depth[static_cast<std::size_t>(nearest)]) {
+            nearest = column;
+        }
+    }
+
+    constexpr int MIDDLE = eh::Framebuffer::H / 2;
+    const float span =
+        static_cast<float>(eh::Framebuffer::H) / target.depth[static_cast<std::size_t>(nearest)];
+    const int reach = std::clamp(static_cast<int>(span * 0.25f), 2, MIDDLE - 1);
+
+    std::vector<uint32_t> column_pixels;
+    for (int y = MIDDLE - reach; y <= MIDDLE + reach; ++y) {
+        column_pixels.push_back(
+            target.pixels[static_cast<std::size_t>(y) * eh::Framebuffer::W + nearest]);
+    }
+    std::sort(column_pixels.begin(), column_pixels.end());
+    column_pixels.erase(std::unique(column_pixels.begin(), column_pixels.end()),
+                        column_pixels.end());
+
+    CAPTURE(nearest);
+    CAPTURE(target.depth[static_cast<std::size_t>(nearest)]);
+    CAPTURE(column_pixels.size());
+    REQUIRE(column_pixels.size() > 3);
 }
 
 TEST_CASE("raycast: DDA terminates at the known east wall in BURROW_01") {

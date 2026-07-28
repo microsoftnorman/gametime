@@ -182,8 +182,17 @@ void init_textures() {
 
 uint32_t sample_wall(Tile tile, int tx, int ty) {
     const int index = texture_index(tile);
-    if (index < 0 || !textures_ready.load(std::memory_order_acquire)) {
+    if (index < 0) {
         return fallback_color(tile);
+    }
+
+    // Generate on first use rather than trusting a caller to have called
+    // init_textures(). Forgetting it used to degrade every wall to a single flat
+    // colour with no error and no failing test, because the only call that
+    // mattered lived in main.cpp, which no test target links. The hot path still
+    // costs exactly one acquire load, as it did before.
+    if (!textures_ready.load(std::memory_order_acquire)) {
+        init_textures();
     }
 
     const int x = wrap_coordinate(tx);
