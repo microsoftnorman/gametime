@@ -88,6 +88,36 @@ constexpr std::array<eh::EventType, 5> kFallingEvents{
     eh::EventType::PlayerHurt, eh::EventType::Lose,
 };
 
+// The multi-note fanfares, and how many notes each is built from.
+struct NoteSequence {
+    eh::EventType type;
+    std::size_t notes;
+};
+
+constexpr std::array<NoteSequence, 2> kNoteSequences{{
+    {eh::EventType::Pickup, 3},
+    {eh::EventType::Win, 4},
+}};
+
+double mean_magnitude(const std::vector<int16_t> &samples, std::size_t begin, std::size_t end) {
+    if (end <= begin) {
+        return 0.0;
+    }
+    double total = 0.0;
+    for (std::size_t i = begin; i < end; ++i) {
+        total += amplitude(samples[i]);
+    }
+    return total / static_cast<double>(end - begin);
+}
+
+int peak_magnitude(const std::vector<int16_t> &samples, std::size_t begin, std::size_t end) {
+    int peak = 0;
+    for (std::size_t i = begin; i < end; ++i) {
+        peak = std::max(peak, amplitude(samples[i]));
+    }
+    return peak;
+}
+
 } // namespace
 
 TEST_CASE("audio: sound lookup is safe before initialization") { REQUIRE(preinit_lookup_was_safe); }
@@ -129,6 +159,48 @@ TEST_CASE("audio: good news rises in pitch and bad news falls") {
 
     // Relational form as well as absolute, so the two families cannot drift together.
     REQUIRE(quietest_rise > steepest_fall);
+}
+
+TEST_CASE("audio: every note in a fanfare is separately articulated") {
+    eh::init_audio_bank();
+
+    // Whole-sound measures cannot see this. Enveloping the whole buffer once instead of
+    // once per note leaves the crest factor unchanged (2.23 vs 2.22) and still ends
+    // quiet, so both the crest guard and the decay test pass while Pickup and Win
+    // degrade into one sustained square-wave blare.
+    for (const NoteSequence &sequence : kNoteSequences) {
+        const std::vector<int16_t> &samples = eh::sound_for(sequence.type).samples;
+        CAPTURE(static_cast<int>(sequence.type), sequence.notes, samples.size());
+
+        int loudest_note = 0;
+        for (std::size_t note = 0; note < sequence.notes; ++note) {
+            const std::size_t begin = note * samples.size() / sequence.notes;
+            const std::size_t end = (note + 1) * samples.size() / sequence.notes;
+            loudest_note = std::max(loudest_note, peak_magnitude(samples, begin, end));
+        }
+        REQUIRE(loudest_note > 0);
+
+        for (std::size_t note = 0; note < sequence.notes; ++note) {
+            const std::size_t begin = note * samples.size() / sequence.notes;
+            const std::size_t end = (note + 1) * samples.size() / sequence.notes;
+            const std::size_t length = end - begin;
+            CAPTURE(note);
+
+            // Every note is struck at full force. Under one shared envelope the later
+            // notes fade out instead: Win's last note peaked at 1068 against 17000.
+            const int note_peak = peak_magnitude(samples, begin, end);
+            CAPTURE(note_peak, loudest_note);
+            REQUIRE(note_peak * 2 > loudest_note);
+
+            // Every note releases to near silence before the next, which is what makes
+            // the sequence read as separate notes. Measured 0.002 here, 0.59 sustained.
+            const double body = mean_magnitude(samples, begin + length / 4, begin + length / 2);
+            const double tail = mean_magnitude(samples, end - length / 20, end);
+            CAPTURE(body, tail);
+            REQUIRE(body > 0.0);
+            REQUIRE(tail < body / 10.0);
+        }
+    }
 }
 
 TEST_CASE("audio: every event has synthesized PCM") {
