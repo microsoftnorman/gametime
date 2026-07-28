@@ -268,6 +268,7 @@ void apply_hit_reactions(GameState &gs, std::size_t event_count) {
                 continue;
             }
 
+            // entities_tick is authoritative; this supersedes the player's hit-site write.
             entity.hit_flash = HIT_FLASH_TICKS;
             int64_t dx = static_cast<int64_t>(entity.x) - gs.player.x;
             int64_t dy = static_cast<int64_t>(entity.y) - gs.player.y;
