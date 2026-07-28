@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -284,6 +285,80 @@ TEST_CASE("sprites: billboards scale inversely with distance") {
     CAPTURE(far_height);
     REQUIRE(near_height / far_height == Catch::Approx(2.0f).epsilon(0.05));
     REQUIRE(near_width / far_width == Catch::Approx(2.0f).epsilon(0.05));
+}
+
+TEST_CASE("sprites: a freshly hit egg renders visibly tinted") {
+    // hit_flash is set by entities_tick, set again by fire(), decremented every tick, and
+    // serialized into the replay digest - three workstreams assert the number is 9. None
+    // of them draw it. Deleting the tint entirely changed no test result.
+    auto render = [](uint16_t hit_flash) {
+        eh::GameState state = state_facing_east();
+        eh::Entity egg = entity_at(1, eh::EntityType::Egg, 3.0f, 0.0f);
+        egg.hit_flash = hit_flash;
+        state.entities.push_back(egg);
+        auto buffer = std::make_unique<GuardedFramebuffer>();
+        eh::render_sprites(state, buffer->framebuffer);
+        REQUIRE(buffer->guards_intact());
+        return buffer->pixels();
+    };
+
+    const std::vector<uint32_t> calm = render(0);
+    const std::vector<uint32_t> struck = render(9);
+    REQUIRE(calm.size() == struck.size());
+
+    std::size_t egg_pixels = 0;
+    std::size_t changed = 0;
+    double calm_red = 0.0;
+    double calm_green = 0.0;
+    double struck_red = 0.0;
+    double struck_green = 0.0;
+    for (std::size_t i = 0; i < calm.size(); ++i) {
+        if (calm[i] == BACKGROUND) {
+            continue;
+        }
+        ++egg_pixels;
+        if (calm[i] == struck[i]) {
+            continue;
+        }
+        ++changed;
+
+        // hit_tint raises red and divides green and blue by three. Distance shading is
+        // applied afterwards, so assert the relationship rather than absolute levels.
+        const uint32_t red = struck[i] & 0xffu;
+        const uint32_t was_red = calm[i] & 0xffu;
+        const uint32_t green = (struck[i] >> 8) & 0xffu;
+        const uint32_t was_green = (calm[i] >> 8) & 0xffu;
+        REQUIRE(red >= was_red);
+        REQUIRE(green <= was_green);
+
+        calm_red += was_red;
+        calm_green += was_green;
+        struck_red += red;
+        struck_green += green;
+    }
+
+    CAPTURE(egg_pixels, changed, calm_red, struck_red, calm_green, struck_green);
+    REQUIRE(egg_pixels > 100);
+    // Nearly the whole egg flashes; a handful of already-red texels may be unchanged.
+    REQUIRE(changed * 2 > egg_pixels);
+
+    // The flash reads as red, not just as some other colour: red rises while green is
+    // cut to well under half, so the hue shifts rather than the brightness alone.
+    REQUIRE(struck_red > calm_red);
+    REQUIRE(struck_green * 2.0 < calm_green);
+}
+
+TEST_CASE("sprites: an unhit egg is not tinted") {
+    eh::GameState state = state_facing_east();
+    state.entities.push_back(entity_at(1, eh::EntityType::Egg, 3.0f, 0.0f));
+    auto first = std::make_unique<GuardedFramebuffer>();
+    eh::render_sprites(state, first->framebuffer);
+
+    state.entities[0].hit_flash = 0;
+    auto second = std::make_unique<GuardedFramebuffer>();
+    eh::render_sprites(state, second->framebuffer);
+
+    REQUIRE(first->pixels() == second->pixels());
 }
 
 TEST_CASE("sprites: weapon stays in bounds and reacts to muzzle flash") {

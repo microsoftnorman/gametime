@@ -234,6 +234,64 @@ TEST_CASE("hud: the health bar depletes in proportion to health") {
     CHECK(quarter * 4 == Catch::Approx(full).margin(8));
 }
 
+TEST_CASE("hud: taking damage reddens the screen edges and fades as the flash expires") {
+    // hurt_flash is set by entities_tick and decremented by player_tick, and finding #4
+    // pinned its nine-tick duration. Nothing asserted it was ever drawn: making
+    // draw_damage_vignette return unconditionally left every test green.
+    eh::GameState calm = playing_state();
+    eh::GameState hurt = playing_state();
+    hurt.player.hurt_flash = 9;
+
+    const std::vector<uint32_t> calm_pixels = render_pixels(calm);
+    const std::vector<uint32_t> hurt_pixels = render_pixels(hurt);
+    REQUIRE(calm_pixels != hurt_pixels);
+
+    // The vignette is an edge effect: corners redden, the centre of the view does not.
+    const auto at = [](const std::vector<uint32_t> &pixels, int x, int y) {
+        return pixels[static_cast<std::size_t>(y) * eh::Framebuffer::W +
+                      static_cast<std::size_t>(x)];
+    };
+    const auto red_of = [](uint32_t color) { return static_cast<int>(color & 0xffu); };
+
+    REQUIRE(red_of(at(hurt_pixels, 0, 0)) > red_of(at(calm_pixels, 0, 0)));
+    REQUIRE(red_of(at(hurt_pixels, eh::Framebuffer::W - 1, eh::Framebuffer::H - 1)) >
+            red_of(at(calm_pixels, eh::Framebuffer::W - 1, eh::Framebuffer::H - 1)));
+    REQUIRE(at(hurt_pixels, eh::Framebuffer::W / 2, eh::Framebuffer::H / 2) ==
+            at(calm_pixels, eh::Framebuffer::W / 2, eh::Framebuffer::H / 2));
+
+    // Intensity tracks the remaining ticks, so the flash visibly fades out.
+    eh::GameState fading = playing_state();
+    fading.player.hurt_flash = 2;
+    const std::vector<uint32_t> fading_pixels = render_pixels(fading);
+    REQUIRE(red_of(at(fading_pixels, 0, 0)) > red_of(at(calm_pixels, 0, 0)));
+    REQUIRE(red_of(at(fading_pixels, 0, 0)) < red_of(at(hurt_pixels, 0, 0)));
+}
+
+TEST_CASE("hud: firing lights up the crosshair") {
+    // muzzle_flash drives both the weapon sprite and the crosshair colour. Only the
+    // weapon side was asserted, so the crosshair could stop responding unnoticed.
+    eh::GameState idle = playing_state();
+    eh::GameState firing = playing_state();
+    firing.muzzle_flash = 4;
+
+    GuardedFramebuffer idle_target;
+    GuardedFramebuffer firing_target;
+    eh::render_hud(idle, idle_target.framebuffer);
+    eh::render_hud(firing, firing_target.framebuffer);
+    REQUIRE(idle_target.guards_intact());
+    REQUIRE(firing_target.guards_intact());
+
+    const int center_x = eh::Framebuffer::W / 2;
+    const int center_y = eh::Framebuffer::H / 2;
+    REQUIRE(idle_target.pixel(center_x, center_y) != firing_target.pixel(center_x, center_y));
+
+    // The lit crosshair is the bright egg yellow, not merely a different colour.
+    const uint32_t lit = firing_target.pixel(center_x, center_y);
+    CAPTURE(lit, idle_target.pixel(center_x, center_y));
+    REQUIRE((lit & 0xffu) > 200u);
+    REQUIRE(((lit >> 8) & 0xffu) > 150u);
+}
+
 TEST_CASE("hud: unsupported font characters use a safe fallback glyph") {
     GuardedFramebuffer target;
     const std::string unsupported(1, static_cast<char>(0xff));
