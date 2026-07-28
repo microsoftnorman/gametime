@@ -57,9 +57,79 @@ constexpr std::array<DurationExpectation, 7> kDurationExpectations{{
     {eh::EventType::Lose, 300, 500},
 }};
 
+// Zero-crossing rate is a cheap dominant-pitch proxy for these square-wave tones:
+// the faster the waveform flips sign, the higher it sounds.
+double zero_crossing_rate(const std::vector<int16_t> &samples, std::size_t begin, std::size_t end) {
+    if (end <= begin + 1) {
+        return 0.0;
+    }
+    std::size_t crossings = 0;
+    for (std::size_t i = begin + 1; i < end; ++i) {
+        if ((samples[i - 1] >= 0) != (samples[i] >= 0)) {
+            ++crossings;
+        }
+    }
+    return static_cast<double>(crossings) / static_cast<double>(end - begin);
+}
+
+// Ratio of ending pitch to starting pitch. Above 1 the sound rises, below 1 it falls.
+double pitch_direction(eh::EventType type) {
+    const std::vector<int16_t> &samples = eh::sound_for(type).samples;
+    const std::size_t quarter = samples.size() / 4;
+    const double opening = zero_crossing_rate(samples, 0, quarter);
+    const double closing = zero_crossing_rate(samples, samples.size() - quarter, samples.size());
+    return opening > 0.0 ? closing / opening : 0.0;
+}
+
+// mvp.md's sound design: good news rises, bad news falls.
+constexpr std::array<eh::EventType, 2> kRisingEvents{eh::EventType::Pickup, eh::EventType::Win};
+constexpr std::array<eh::EventType, 5> kFallingEvents{
+    eh::EventType::Shot,       eh::EventType::EggHit, eh::EventType::EggDeath,
+    eh::EventType::PlayerHurt, eh::EventType::Lose,
+};
+
 } // namespace
 
 TEST_CASE("audio: sound lookup is safe before initialization") { REQUIRE(preinit_lookup_was_safe); }
+
+TEST_CASE("audio: every event maps to its own distinct sound") {
+    eh::init_audio_bank();
+
+    // A duplicated arm in sound_for() makes two events share one buffer: the game plays
+    // the wrong sound with every other audio property still perfectly satisfied.
+    for (std::size_t i = 0; i < kEventTypes.size(); ++i) {
+        for (std::size_t j = i + 1; j < kEventTypes.size(); ++j) {
+            CAPTURE(static_cast<int>(kEventTypes[i]), static_cast<int>(kEventTypes[j]));
+            REQUIRE(&eh::sound_for(kEventTypes[i]) != &eh::sound_for(kEventTypes[j]));
+            REQUIRE(eh::sound_for(kEventTypes[i]).samples != eh::sound_for(kEventTypes[j]).samples);
+        }
+    }
+}
+
+TEST_CASE("audio: good news rises in pitch and bad news falls") {
+    eh::init_audio_bank();
+
+    // Duration bounds cannot separate Win from Lose - their ranges overlap - so swapping
+    // them plays defeat over the victory screen with every other test still green.
+    double quietest_rise = std::numeric_limits<double>::max();
+    for (const eh::EventType type : kRisingEvents) {
+        const double ratio = pitch_direction(type);
+        CAPTURE(static_cast<int>(type), ratio);
+        REQUIRE(ratio > 1.2);
+        quietest_rise = std::min(quietest_rise, ratio);
+    }
+
+    double steepest_fall = 0.0;
+    for (const eh::EventType type : kFallingEvents) {
+        const double ratio = pitch_direction(type);
+        CAPTURE(static_cast<int>(type), ratio);
+        REQUIRE(ratio < 0.85);
+        steepest_fall = std::max(steepest_fall, ratio);
+    }
+
+    // Relational form as well as absolute, so the two families cannot drift together.
+    REQUIRE(quietest_rise > steepest_fall);
+}
 
 TEST_CASE("audio: every event has synthesized PCM") {
     eh::init_audio_bank();
