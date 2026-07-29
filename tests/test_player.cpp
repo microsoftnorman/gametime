@@ -555,3 +555,74 @@ TEST_CASE("player: walking into a wall settles flush against every face") {
         CHECK_FALSE(overlaps_wall(game));
     }
 }
+
+// The weapon's footfall cadence is driven by `bob`, which advances a fixed phase step on any tick
+// where the player's position changed *at all* -- the test is `!=`, a zero threshold. The cadence
+// is therefore completely independent of how fast the player is actually moving.
+//
+// Measured over three seconds of rendered frames: a free walk covers 3.19 tiles/sec, a sprint
+// 4.79, and a player grinding 0.2 degrees off a wall 0.029 -- a 163x spread in ground speed --
+// while the weapon dips 19.67 times per second in every single one. Sprinting lengthens the
+// stride rather than quickening the step, and a player creeping along a wall still hears a full
+// run. `sprites: the weapon dips four times per left-right sweep` pins the other half of this
+// seam, phase to pixels; this pins the producer.
+//
+// Making the advance distance-proportional -- the obvious improvement -- leaves 111 of 112 tests
+// green. The only failure is the replay digest, which reports that something changed, not what,
+// and would most likely just be re-blessed. So this test states the behaviour as it currently
+// stands, to force that change to be deliberate. Whether ~20 footfalls per second is the right
+// *feel*, and whether sprint should quicken the cadence, are playtest questions it cannot answer.
+TEST_CASE("player: footfall cadence is currently independent of ground speed") {
+    constexpr int TICKS = 120;
+
+    struct Result {
+        eh::fx bob;
+        double tiles;
+    };
+
+    auto run = [](double degrees, bool sprint, bool flush_to_wall) {
+        eh::GameState game;
+        eh::reset(game, 0x5eed1234u);
+        game.player.angle = eh::angle_from_deg(degrees);
+        // Row 3 is a fully open corridor. `flush_to_wall` instead parks the player already hard
+        // against the north wall, so the entire window is a grind with no free approach in it.
+        game.player.x = eh::fx_from_int(2) + eh::FX_ONE / 2;
+        game.player.y = flush_to_wall ? eh::fx_from_int(1) + eh::FX_ONE / 4
+                                      : eh::fx_from_int(3) + eh::FX_ONE / 2;
+
+        eh::InputFrame in;
+        in.move_y = 1;
+        if (sprint) {
+            in.buttons |= eh::InputFrame::Sprint;
+        }
+
+        const eh::fx start_x = game.player.x;
+        const eh::fx start_y = game.player.y;
+        for (int t = 0; t < TICKS; ++t) {
+            eh::player_tick(game, in);
+        }
+
+        const double dx = static_cast<double>(game.player.x - start_x) / eh::FX_ONE;
+        const double dy = static_cast<double>(game.player.y - start_y) / eh::FX_ONE;
+        return Result{game.player.bob, std::sqrt(dx * dx + dy * dy)};
+    };
+
+    const Result walk = run(0.0, false, false);
+    const Result sprint = run(0.0, true, false);
+    const Result grind = run(269.8, false, true);
+
+    // Non-vacuity: the three runs must really have moved at very different speeds, or asserting
+    // that cadence ignores speed would be asserting nothing.
+    INFO("walk " << walk.tiles << " sprint " << sprint.tiles << " grind " << grind.tiles);
+    REQUIRE(walk.tiles > 5.0);
+    REQUIRE(sprint.tiles > walk.tiles * 1.4);
+    REQUIRE(grind.tiles < walk.tiles / 50.0);
+    REQUIRE(grind.tiles > 0.0);
+
+    // The phase reached is nonetheless bit-identical across all three.
+    CHECK(sprint.bob == walk.bob);
+    CHECK(grind.bob == walk.bob);
+
+    // And the phase genuinely advanced, so equality is not three copies of a resting zero.
+    REQUIRE(walk.bob != 0);
+}
