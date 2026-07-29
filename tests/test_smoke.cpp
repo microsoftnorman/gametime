@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -123,4 +124,116 @@ TEST_CASE("screen dispatch starts and restarts a fresh game") {
     REQUIRE(game.screen == eh::Screen::Playing);
     REQUIRE(game.player.health == 100);
     REQUIRE(game.tick == 0);
+}
+
+namespace {
+
+int pending_events(const eh::GameState &gs, eh::EventType type) {
+    int count = 0;
+    for (const eh::GameEvent &event : gs.events) {
+        count += event.type == type ? 1 : 0;
+    }
+    return count;
+}
+
+float tiles_between(eh::fx ax, eh::fx ay, eh::fx bx, eh::fx by) {
+    const float dx = eh::fx_to_float(static_cast<eh::fx>(bx - ax));
+    const float dy = eh::fx_to_float(static_cast<eh::fx>(by - ay));
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+} // namespace
+
+// entities_tick emits Win and Lose, and the HUD draws the Won and Lost screens, but until this
+// test nothing asserted that the events ever reach the screen. Both endpoints were covered and
+// the wire between them was not: deleting either transition left the game unwinnable and
+// unloseable with the whole suite green.
+TEST_CASE("state: winning requires clearing every egg and reaching the basket") {
+    eh::GameState game;
+    eh::reset(game, 1u);
+    const eh::InputFrame idle;
+
+    const eh::fx basket_x = game.level.basket.x;
+    const eh::fx basket_y = game.level.basket.y;
+    const eh::fx spawn_x = game.player.x;
+    const eh::fx spawn_y = game.player.y;
+
+    // The two halves of the objective have to be separable or this test cannot tell them apart.
+    REQUIRE(tiles_between(spawn_x, spawn_y, basket_x, basket_y) > 2.0f);
+
+    SECTION("standing on the basket with eggs alive is not a win") {
+        game.player.x = basket_x;
+        game.player.y = basket_y;
+        eh::tick(game, idle);
+
+        REQUIRE(game.eggs_remaining == 5);
+        REQUIRE(pending_events(game, eh::EventType::Win) == 0);
+        REQUIRE(game.screen == eh::Screen::Playing);
+    }
+
+    SECTION("clearing every egg away from the basket is not a win") {
+        for (eh::Entity &entity : game.entities) {
+            if (entity.type == eh::EntityType::Egg) {
+                entity.health = 0;
+            }
+        }
+        eh::tick(game, idle);
+
+        REQUIRE(game.eggs_remaining == 0);
+        REQUIRE(pending_events(game, eh::EventType::Win) == 0);
+        REQUIRE(game.screen == eh::Screen::Playing);
+    }
+
+    SECTION("both together end the game on the winning screen") {
+        for (eh::Entity &entity : game.entities) {
+            if (entity.type == eh::EntityType::Egg) {
+                entity.health = 0;
+            }
+        }
+        eh::tick(game, idle);
+        REQUIRE(game.eggs_remaining == 0);
+        REQUIRE(game.screen == eh::Screen::Playing);
+
+        game.player.x = basket_x;
+        game.player.y = basket_y;
+        eh::tick(game, idle);
+
+        REQUIRE(pending_events(game, eh::EventType::Win) == 1);
+        REQUIRE(game.screen == eh::Screen::Won);
+    }
+}
+
+TEST_CASE("state: losing the last of your health ends the game and announces it") {
+    eh::GameState game;
+    eh::reset(game, 1u);
+    const eh::InputFrame idle;
+
+    // Park an egg inside its own attack range and leave the player one point of health, so the
+    // kill arrives through the real AI and damage path rather than by assignment.
+    eh::Entity *attacker = nullptr;
+    for (eh::Entity &entity : game.entities) {
+        if (entity.type == eh::EntityType::Egg) {
+            attacker = &entity;
+            break;
+        }
+    }
+    REQUIRE(attacker != nullptr);
+    attacker->x = static_cast<eh::fx>(game.player.x + eh::FX_ONE / 4);
+    attacker->y = game.player.y;
+    game.player.health = 1;
+
+    int ticks = 0;
+    while (game.screen == eh::Screen::Playing && ticks < 600) {
+        eh::tick(game, idle);
+        ++ticks;
+    }
+
+    REQUIRE(ticks < 600);
+    REQUIRE(game.screen == eh::Screen::Lost);
+    REQUIRE(game.player.health == 0);
+    // The same tick must still carry the event, or the defeat sound never plays.
+    REQUIRE(pending_events(game, eh::EventType::Lose) == 1);
+    // tick() reaches this screen by two redundant routes: the direct health check and the Lose
+    // event. Measured: disabling either one alone still loses the game, so this asserts the
+    // outcome rather than one branch. Disabling both is what it catches.
 }
