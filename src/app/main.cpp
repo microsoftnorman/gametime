@@ -50,6 +50,30 @@ constexpr std::array<eh::EventType, 7> AUDIBLE_EVENTS{
     eh::EventType::Pickup, eh::EventType::PlayerHurt, eh::EventType::Win,
     eh::EventType::Lose};
 
+// play() scans this list and returns silently when it finds no match, so a single wrong entry
+// here mutes an event in the shipped game with no other symptom. Dropping Win (leaving a
+// duplicate Lose) was verified to pass all 97 tests: you would win and hear nothing. No test
+// links this file, so the guard has to hold at compile time.
+//
+// Scope, stated plainly: this proves every enumerator below Lose appears exactly once, which
+// catches the realistic hand-edit - a dropped, duplicated or mistyped entry. It does NOT catch
+// someone appending an eighth EventType and forgetting to list it, because the array would
+// still hold seven distinct valid values. Closing that would need a Count sentinel in events.h.
+constexpr bool audible_events_list_every_type_once() {
+    std::array<bool, AUDIBLE_EVENTS.size()> seen{};
+    for (const eh::EventType type : AUDIBLE_EVENTS) {
+        const auto index = static_cast<std::size_t>(type);
+        if (index >= seen.size() || seen[index]) {
+            return false;
+        }
+        seen[index] = true;
+    }
+    return true;
+}
+
+static_assert(audible_events_list_every_type_once(),
+              "AUDIBLE_EVENTS must list every EventType exactly once, or an event goes silent");
+
 // The per-tick repeat filter below packs one bit per event type into a uint32_t. This was a
 // uint8_t, which fit today's seven enumerators with one slot spare; at a ninth the shift would
 // have fallen out of range and silently stopped de-duplicating, stacking repeats into clipping.
