@@ -112,6 +112,32 @@ PixelBounds modified_bounds(const GuardedFramebuffer &buffer) {
     return bounds;
 }
 
+int drawn_pixel_count(const GuardedFramebuffer &buffer) {
+    int count = 0;
+    for (std::size_t index = 0; index < GuardedFramebuffer::PIXEL_COUNT; ++index) {
+        if (buffer.framebuffer.pixels[index] != BACKGROUND) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+double drawn_centroid_x(const GuardedFramebuffer &buffer) {
+    long long total = 0;
+    long long weighted = 0;
+    for (int y = 0; y < eh::Framebuffer::H; ++y) {
+        for (int x = 0; x < eh::Framebuffer::W; ++x) {
+            const std::size_t index =
+                static_cast<std::size_t>(y) * eh::Framebuffer::W + static_cast<std::size_t>(x);
+            if (buffer.framebuffer.pixels[index] != BACKGROUND) {
+                ++total;
+                weighted += x;
+            }
+        }
+    }
+    return total == 0 ? -1.0 : static_cast<double>(weighted) / static_cast<double>(total);
+}
+
 } // namespace
 
 TEST_CASE("sprites: close billboard writes only inside the framebuffer") {
@@ -1078,4 +1104,98 @@ TEST_CASE("sprites: a cracked egg and a collected pickup leave the screen entire
     eh::render_sprites(gs, dead.framebuffer);
     CHECK(dead.pixels_unchanged());
     CHECK(dead.guards_intact());
+}
+TEST_CASE("sprites: the weapon is anchored to the bottom edge and inset from both sides") {
+    // Every other weapon placement assertion in this suite is RELATIVE: the bob tests
+    // compare bounds.left against a rest render, the dip test compares bounds.top against
+    // a rest render, and the muzzle-flash reach test compares a firing silhouette against
+    // an idle one. Translating the whole weapon by a constant offset moves the subject and
+    // its own baseline together, so it cancels out of every one of those deltas. Measured:
+    // drawing the weapon hard against the left edge passed 134/134, and drawing it at the
+    // top of the screen tripped only the HUD-ordering test, which is about layer order and
+    // died there for an unrelated reason. The gun's absolute screen anchor was pinned by
+    // nothing.
+    //
+    // The bounds below are measured across the whole reachable state space -- bob and the
+    // muzzle-flash recoil are the only two inputs that move the weapon -- and no origin
+    // arithmetic from sprites.cpp is reproduced here.
+    struct Pose {
+        const char *label;
+        float bob;
+        uint16_t muzzle_flash;
+    };
+    const std::array<Pose, 8> poses{Pose{"at rest", 0.0f, 0},
+                                    Pose{"bob quarter", 0.25f, 0},
+                                    Pose{"bob half", 0.5f, 0},
+                                    Pose{"bob three quarters", 0.75f, 0},
+                                    Pose{"firing", 0.0f, eh::MUZZLE_FLASH_TICKS},
+                                    Pose{"firing + bob quarter", 0.25f, eh::MUZZLE_FLASH_TICKS},
+                                    Pose{"firing + bob half", 0.5f, eh::MUZZLE_FLASH_TICKS},
+                                    Pose{"fading shot", 0.75f, 1}};
+
+    SECTION("anchored to the bottom edge") {
+        for (const Pose &pose : poses) {
+            eh::GameState state = state_facing_east();
+            state.player.bob = eh::fx_from_float(pose.bob);
+            state.muzzle_flash = pose.muzzle_flash;
+
+            auto buffer = std::make_unique<GuardedFramebuffer>();
+            eh::render_weapon(state, buffer->framebuffer);
+            const PixelBounds bounds = modified_bounds(*buffer);
+
+            INFO("pose: " << pose.label);
+            REQUIRE(buffer->guards_intact());
+            REQUIRE(bounds.valid());
+            // Non-vacuity: without it, "no weapon pixel lands up there" is satisfied by a
+            // weapon that draws nothing at all. Measured 16038-18269.
+            REQUIRE(drawn_pixel_count(*buffer) > 5000);
+
+            // Measured: bottom is H-1 in every reachable pose, and top ranges 187..203.
+            CHECK(bounds.bottom >= eh::Framebuffer::H - 2);
+            CHECK(bounds.top > eh::Framebuffer::H / 3);
+        }
+    }
+
+    SECTION("inset from both side edges") {
+        for (const Pose &pose : poses) {
+            eh::GameState state = state_facing_east();
+            state.player.bob = eh::fx_from_float(pose.bob);
+            state.muzzle_flash = pose.muzzle_flash;
+
+            auto buffer = std::make_unique<GuardedFramebuffer>();
+            eh::render_weapon(state, buffer->framebuffer);
+            const PixelBounds bounds = modified_bounds(*buffer);
+
+            INFO("pose: " << pose.label);
+            REQUIRE(buffer->guards_intact());
+            REQUIRE(bounds.valid());
+            REQUIRE(drawn_pixel_count(*buffer) > 5000);
+
+            // Measured: left 215..261, right 488..507 on a 640-wide screen.
+            CHECK(bounds.left > eh::Framebuffer::W / 8);
+            CHECK(bounds.right < eh::Framebuffer::W - eh::Framebuffer::W / 8);
+        }
+    }
+
+    SECTION("held on the right-hand side of the view") {
+        // Characterization, not endorsement: the weapon sits deliberately right of centre,
+        // the classic first-person arrangement. Measured centroid 366..399 against a screen
+        // centre of 320. Moving it to the left hand is a legitimate art decision -- this
+        // makes it a deliberate one rather than a silent drift, in the shape the RNG
+        // invariant established.
+        for (const Pose &pose : poses) {
+            eh::GameState state = state_facing_east();
+            state.player.bob = eh::fx_from_float(pose.bob);
+            state.muzzle_flash = pose.muzzle_flash;
+
+            auto buffer = std::make_unique<GuardedFramebuffer>();
+            eh::render_weapon(state, buffer->framebuffer);
+
+            INFO("pose: " << pose.label);
+            REQUIRE(buffer->guards_intact());
+            REQUIRE(drawn_pixel_count(*buffer) > 5000);
+
+            CHECK(drawn_centroid_x(*buffer) > eh::Framebuffer::W / 2);
+        }
+    }
 }
