@@ -304,7 +304,7 @@ namespace {
 
 // Distance travelled in one tick from a centred open cell. One tick moves
 // ~0.05 tiles, so with a 0.25 radius this can never reach a wall.
-double tiles_per_second(int8_t move_x, int8_t move_y) {
+double tiles_per_second(int8_t move_x, int8_t move_y, uint8_t buttons = 0) {
     eh::GameState game;
     eh::reset(game, 77);
     game.player.x = eh::fx_from_int(game.player.x / eh::FX_ONE) + eh::FX_ONE / 2;
@@ -318,6 +318,7 @@ double tiles_per_second(int8_t move_x, int8_t move_y) {
     eh::InputFrame input;
     input.move_x = move_x;
     input.move_y = move_y;
+    input.buttons = buttons;
     eh::player_tick(game, input);
 
     const double dx = static_cast<double>(game.player.x - x0);
@@ -333,6 +334,27 @@ TEST_CASE("player: move speeds match the tuning table in mvp.md") {
     CHECK(tiles_per_second(0, 1) == Catch::Approx(3.2).epsilon(0.015));  // forward
     CHECK(tiles_per_second(1, 0) == Catch::Approx(2.6).epsilon(0.015));  // strafe
     CHECK(tiles_per_second(0, -1) == Catch::Approx(2.0).epsilon(0.015)); // backward
+}
+
+// mvp.md's tuning table specifies "Sprint multiplier | 1.5", and the controls table binds it
+// to Shift. Setting SPRINT_NUMERATOR from 3 to 2 - so sprint multiplies by exactly 1.0 and the
+// Shift key does nothing at all - was caught only by the replay trajectory digest, which
+// reports that something moved without naming what. The Sprint button appears elsewhere in
+// this file only inside a determinism equality, which holds no matter what the button does.
+TEST_CASE("player: sprint multiplies every axis by the tuning table's 1.5") {
+    const double walk = tiles_per_second(0, 1);
+    const double sprint = tiles_per_second(0, 1, eh::InputFrame::Sprint);
+
+    // Ratio first: this is what the table actually specifies, and it survives a deliberate
+    // retune of the base speeds. The absolute values below then pin those base speeds too.
+    REQUIRE(sprint > walk);
+    CHECK(sprint / walk == Catch::Approx(1.5).epsilon(0.015));
+
+    CHECK(sprint == Catch::Approx(4.8).epsilon(0.015)); // forward
+    CHECK(tiles_per_second(1, 0, eh::InputFrame::Sprint) ==
+          Catch::Approx(3.9).epsilon(0.015)); // strafe
+    CHECK(tiles_per_second(0, -1, eh::InputFrame::Sprint) ==
+          Catch::Approx(3.0).epsilon(0.015)); // back
 }
 
 TEST_CASE("player: diagonal movement is deliberately unnormalized") {
