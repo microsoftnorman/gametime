@@ -58,6 +58,26 @@ eh::GameState scene() {
     return state;
 }
 
+// The weapon layer alone. Both channels gs.muzzle_flash drives -- the flash art and the
+// recoil offset -- live here and nothing else in the frame reads that field, so rendering
+// this layer by itself makes "the weapon is flashing" a question about pixels rather than
+// about the field's value.
+std::vector<uint32_t> weapon_pixels(const eh::GameState &gs) {
+    Target target;
+    eh::render_weapon(gs, target.framebuffer);
+    return target.pixels;
+}
+
+int differing_pixels(const std::vector<uint32_t> &a, const std::vector<uint32_t> &b) {
+    int count = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (a[i] != b[i]) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 } // namespace
 
 // The wall camera and the billboard camera each build their own basis from the same player
@@ -624,4 +644,101 @@ TEST_CASE("render: the animation clock advances with simulation time and reaches
     // tick, not merely to a value that rises.
     CHECK(state.tick == static_cast<uint32_t>(RUN_TICKS));
     CHECK(changed >= 20);
+}
+
+// Finding #61. Finding #60 established that a test which *assigns* a field can never verify
+// that the game loop *produces* that value, and asked the obvious follow-up question of every
+// other field a renderer reads. gs.muzzle_flash was the next one, and the answer was the same.
+//
+// Its write is well pinned: test_player asserts muzzle_flash == 4 on the firing tick, and
+// test_sprites (finding #45) pins how the flash dims and how the recoil kicks across the whole
+// countdown -- by assigning the field. Its *decay* was pinned by nothing:
+//
+//   decrement(gs.muzzle_flash) removed -- the weapon flashes forever    1 of 132, digest only
+//   muzzle_flash decays twice per tick -- half as long                  1 of 132, digest only
+//
+// Both were caught only by `replay: a 600 tick input script is deterministic`, which reports
+// that a hash moved and names nothing. A permanently lit muzzle flash, with the gun frozen at
+// full recoil on every frame of the demo, is not a subtle regression.
+//
+// Recorded as a negative result, because it removed a section from this test: moving the
+// decrement below fire(), so the first rendered frame carries one step less than it should,
+// IS already caught by name -- `player: firing consumes ammo and respects the cooldown`
+// asserts muzzle_flash == 4 on the firing tick. A draft of this test carried a third section
+// pinning that same ordering in pixels. Every mutant killed it alongside another section and
+// nothing killed it alone, so by the standing rule -- if two assertions never die apart they
+// are one assertion -- it was redundant and is gone. The gap was the countdown, not the arm.
+//
+// The two sections that remain are chosen so that each has a mutant the other survives:
+// releasing the trigger must not freeze the flash, and holding it must not relight the flash
+// on every tick. MUZZLE_FLASH_TICKS is read from the shared header rather than written as a
+// literal -- finding #16 owns that number, and this test owns the loop that spends it.
+TEST_CASE("render: one trigger pull lights the weapon for the whole flash and no longer") {
+    const eh::InputFrame idle{};
+    eh::InputFrame fire{};
+    fire.buttons = eh::InputFrame::Fire;
+
+    eh::GameState quiet;
+    eh::reset(quiet, 0x5eed1234u);
+    quiet.screen = eh::Screen::Playing;
+    quiet.muzzle_flash = 0;
+    const std::vector<uint32_t> rest = weapon_pixels(quiet);
+
+    eh::GameState armed = quiet;
+    armed.muzzle_flash = eh::MUZZLE_FLASH_TICKS;
+
+    // Control: an unlit weapon and a fully lit one must be materially different pictures, or
+    // every "the weapon is lit" claim below is satisfied by a renderer that draws nothing.
+    REQUIRE(differing_pixels(weapon_pixels(armed), rest) > 5000);
+
+    SECTION("one shot lights the weapon for exactly the flash duration, then releases it") {
+        eh::GameState gs = quiet;
+        int lit = 0;
+        bool ended = false;
+        for (int frame = 0; frame < 12; ++frame) {
+            eh::tick(gs, frame == 0 ? fire : idle);
+            REQUIRE(gs.screen == eh::Screen::Playing);
+            if (differing_pixels(weapon_pixels(gs), rest) > 0) {
+                CAPTURE(frame);
+                // Nothing fires again in this window, so a relit frame means the countdown
+                // is not monotone rather than that a second shot went off.
+                CHECK_FALSE(ended);
+                ++lit;
+            } else {
+                ended = true;
+            }
+        }
+        CAPTURE(lit);
+        // The trigger is released after the first tick, so this also pins that the countdown
+        // is driven by the tick and not by the button -- a flash that only decays while Fire
+        // is held stays lit here forever and is invisible to the held-trigger section below.
+        CHECK(lit == static_cast<int>(eh::MUZZLE_FLASH_TICKS));
+    }
+
+    SECTION("holding the trigger relights the flash per shot, not per frame") {
+        eh::GameState gs = quiet;
+        const int ammo_before = static_cast<int>(gs.player.ammo);
+
+        int lit = 0;
+        int dark = 0;
+        for (int frame = 0; frame < 40; ++frame) {
+            eh::tick(gs, fire);
+            if (differing_pixels(weapon_pixels(gs), rest) > 0) {
+                ++lit;
+            } else {
+                ++dark;
+            }
+        }
+
+        const int shots = ammo_before - static_cast<int>(gs.player.ammo);
+        CAPTURE(shots, lit, dark);
+        // Non-vacuity from both ends: the trigger has to have produced several shots, and the
+        // weapon has to have gone dark at some point, or "lit == shots * duration" is
+        // satisfied by a gun that never fires or by one that never stops flashing.
+        REQUIRE(shots > 1);
+        CHECK(dark > 0);
+        // The relationship, with no cooldown constant reproduced: every shot buys exactly one
+        // flash duration of light, and pulling the trigger between shots buys nothing.
+        CHECK(lit == shots * static_cast<int>(eh::MUZZLE_FLASH_TICKS));
+    }
 }
