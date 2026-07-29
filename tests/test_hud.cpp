@@ -108,6 +108,45 @@ int vignette_delta(const std::vector<uint32_t> &hurt, const std::vector<uint32_t
     return static_cast<int>(hurt[index] & 0xffu) - static_cast<int>(calm[index] & 0xffu);
 }
 
+// A level with exactly one egg, parked in contact with the player so an idle input is
+// enough to get bitten on the normal attack cadence.
+eh::GameState bitten_state() {
+    eh::GameState gs;
+    eh::reset(gs, 12345u);
+    eh::Entity *contact = nullptr;
+    for (eh::Entity &entity : gs.entities) {
+        if (entity.type != eh::EntityType::Egg) {
+            continue;
+        }
+        if (contact == nullptr) {
+            contact = &entity;
+        } else {
+            entity.alive = false;
+            entity.ai = eh::AiState::Dead;
+        }
+    }
+    contact->x = gs.player.x + eh::FX_ONE / 4;
+    contact->y = gs.player.y;
+    contact->ai = eh::AiState::Chase;
+    contact->timer = 0;
+    return gs;
+}
+
+// The vignette's own contribution to a frame, isolated by re-rendering the identical
+// state with the flash cleared. Everything else the HUD does -- the health readout, the
+// tick-driven warning blink -- appears in both images and cancels.
+bool vignette_present(const eh::GameState &gs) {
+    eh::GameState without = gs;
+    without.player.hurt_flash = 0;
+    return render_pixels(gs) != render_pixels(without);
+}
+
+int vignette_peak(const eh::GameState &gs) {
+    eh::GameState without = gs;
+    without.player.hurt_flash = 0;
+    return vignette_delta(render_pixels(gs), render_pixels(without), eh::Framebuffer::W / 2, 0);
+}
+
 } // namespace
 
 TEST_CASE("hud: rendering never writes outside the framebuffer") {
@@ -837,5 +876,103 @@ TEST_CASE("hud: the damage vignette is a gradient of a measured depth and intens
         eh::GameState expired = playing_state();
         expired.player.hurt_flash = 0;
         CHECK(render_pixels(expired) == calm_pixels);
+    }
+}
+
+// Finding #59 pinned the vignette's shape given a hurt_flash value. Nothing pinned that
+// the running game ever produces those values, and a grep for assertions on hurt_flash
+// finds exactly one in the whole suite -- `max_hurt_flash > 0` inside the replay test,
+// which says only that the player was hurt at some point in 600 ticks.
+//
+// So the flash's life on screen was unowned, and three mutants prove it. Each was caught
+// by the replay digest alone, which reports that a hash moved:
+//
+//   hurt_flash never decays (the screen stays red permanently)   1 of 131, digest only
+//   hurt_flash decays twice per tick (flash half as long)        1 of 131, digest only
+//   player_tick and entities_tick swapped                        1 of 131, digest only
+//
+// The last one is the subtle one and it is why this test drives eh::tick rather than
+// setting a field. player_tick decays the flash and entities_tick writes it, so the order
+// decides whether the very first frame of a hit shows the full nine or an already-decayed
+// eight. No test that assigns hurt_flash directly can see that, including finding #59's.
+//
+// This also corrects a claim in finding #15's comment above, which says finding #4 pinned
+// this nine-tick duration. It did not: #4 pins the *egg's* hit_flash. The player's flash
+// had no named owner, and the cross-reference is why nobody looked again -- a comment
+// asserting that a contract is covered elsewhere is itself a coverage claim, and nothing
+// in the build can turn it red.
+TEST_CASE("hud: the damage flash a frame actually shows lasts nine frames and then stops") {
+    const eh::InputFrame idle{};
+
+    SECTION("one bite reddens exactly nine consecutive frames") {
+        eh::GameState gs = bitten_state();
+
+        int lit_frames = 0;
+        int dark_frames = 0;
+        bool ended = false;
+        for (int frame = 0; frame < 40; ++frame) {
+            eh::tick(gs, idle);
+            REQUIRE(gs.screen == eh::Screen::Playing);
+            if (vignette_present(gs)) {
+                CAPTURE(frame);
+                // Once it has gone out it must not come back: the next bite is well
+                // beyond this window, so a relit frame means the flash is not monotone.
+                CHECK_FALSE(ended);
+                ++lit_frames;
+            } else {
+                ended = true;
+                ++dark_frames;
+            }
+        }
+        CAPTURE(lit_frames, dark_frames);
+        CHECK(lit_frames == 9);
+        CHECK(dark_frames == 31);
+    }
+
+    SECTION("the first frame of a hit shows the full flash, not an already-decayed one") {
+        eh::GameState gs = bitten_state();
+        eh::tick(gs, idle);
+        REQUIRE(vignette_present(gs));
+
+        // Tie the loop to the unit-level fixture rather than restating an intensity
+        // number: the brightest frame the game can produce must be the brightest frame
+        // the renderer can draw. If the tick order decays before it writes, the game
+        // silently loses its top step and this comparison is what notices.
+        eh::GameState full = bitten_state();
+        full.player.hurt_flash = 9;
+        CAPTURE(vignette_peak(gs), vignette_peak(full));
+        CHECK(vignette_peak(gs) == vignette_peak(full));
+
+        // And it steps down, once per frame. Deliberately stops short of the final
+        // frame: the flash's total length is section one's contract and this loop must
+        // not quietly duplicate it.
+        int previous = vignette_peak(gs);
+        for (int frame = 1; frame < 8; ++frame) {
+            eh::tick(gs, idle);
+            const int current = vignette_peak(gs);
+            CAPTURE(frame, previous, current);
+            CHECK(current < previous);
+            CHECK(current > 0);
+            previous = current;
+        }
+    }
+
+    SECTION("the blow that kills you is never drawn") {
+        // Characterization, not endorsement. tick() flips the screen to Lost in the same
+        // call that sets the flash, and the vignette is drawn only by render_playing_hud,
+        // so the red flash of the killing blow never reaches a frame -- you get the lose
+        // screen instead. That is a consequence of tick ordering rather than a decision
+        // anyone recorded, and whether the player should see that last flash is a
+        // playtest question. Pinned here so that changing it has to be deliberate.
+        eh::GameState gs = bitten_state();
+        gs.player.health = 5;
+        eh::tick(gs, idle);
+
+        REQUIRE(gs.player.health <= 0);
+        REQUIRE(gs.screen == eh::Screen::Lost);
+        // The flash was written on the fatal tick...
+        CHECK(gs.player.hurt_flash > 0);
+        // ...and contributes nothing to what is drawn.
+        CHECK_FALSE(vignette_present(gs));
     }
 }
