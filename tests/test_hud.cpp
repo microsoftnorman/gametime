@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -399,4 +400,114 @@ TEST_CASE("hud: unsupported font characters use a safe fallback glyph") {
     REQUIRE(target.guards_intact());
     REQUIRE(std::any_of(image.begin(), image.end(),
                         [](uint32_t pixel) { return pixel != BACKGROUND; }));
+}
+
+// GameState::shake is read only here, and no simulation path writes it (see
+// "state: nothing in the simulation raises the screen shake timer" in
+// test_replay.cpp). That makes render-side coverage the only thing standing
+// between this code and silent rot: replacing the shake amplitude with a
+// constant 0 was verified to pass all 117 tests.
+//
+// The displacement is recovered from pixels rather than recomputed. Rendering
+// the same tick with and without shake gives two images that differ only by a
+// rigid translation of the HUD content, so the shift is whichever offset best
+// reconstructs one from the other. Nothing here reproduces the offset formula
+// or names a single HUD layout coordinate, and the match margin is asserted so
+// a recovered shift cannot be noise.
+namespace {
+
+struct Displacement {
+    int dx = 0;
+    int dy = 0;
+    int margin = 0;
+};
+
+Displacement recover_displacement(const std::vector<uint32_t> &shaken,
+                                  const std::vector<uint32_t> &still) {
+    constexpr int W = eh::Framebuffer::W;
+    constexpr int H = eh::Framebuffer::H;
+    // Skip the panel's top border rows, which are drawn unshifted, and inset the
+    // edges so a shifted lookup stays inside the image.
+    constexpr int FIRST_ROW = 306;
+    constexpr int SEARCH = 8;
+
+    Displacement best;
+    int best_score = -1;
+    int runner_up = -1;
+    for (int dy = -SEARCH; dy <= SEARCH; ++dy) {
+        for (int dx = -SEARCH; dx <= SEARCH; ++dx) {
+            int score = 0;
+            for (int y = FIRST_ROW; y < H - SEARCH; ++y) {
+                for (int x = SEARCH; x < W - SEARCH; ++x) {
+                    if (shaken[static_cast<std::size_t>(y) * W + x] ==
+                        still[static_cast<std::size_t>(y - dy) * W + (x - dx)]) {
+                        ++score;
+                    }
+                }
+            }
+            if (score > best_score) {
+                runner_up = best_score;
+                best_score = score;
+                best.dx = dx;
+                best.dy = dy;
+            } else if (score > runner_up) {
+                runner_up = score;
+            }
+        }
+    }
+    best.margin = best_score - runner_up;
+    return best;
+}
+
+} // namespace
+
+TEST_CASE("hud: screen shake jitters the readouts within a bounded amplitude") {
+    eh::GameState state = playing_state();
+
+    SECTION("a still HUD does not move on its own") {
+        state.shake = 0;
+        state.tick = 0;
+        const std::vector<uint32_t> first = render_pixels(state);
+        state.tick = 7;
+        const std::vector<uint32_t> later = render_pixels(state);
+        CHECK(first == later);
+    }
+
+    SECTION("amplitude tracks the timer and saturates") {
+        // Expected peak offset per timer value. hud.cpp clamps the amplitude, so
+        // a long timer must not throw the HUD further than a short one.
+        const std::array<std::pair<int, int>, 5> cases{{{1, 1}, {2, 2}, {3, 3}, {5, 3}, {9, 3}}};
+
+        for (const auto &[timer, expected_peak] : cases) {
+            int peak_dx = 0;
+            int peak_dy = 0;
+            int worst_margin = std::numeric_limits<int>::max();
+            std::vector<std::pair<int, int>> distinct;
+            for (std::uint32_t t = 0; t < 24; ++t) {
+                state.tick = t;
+                state.shake = 0;
+                const std::vector<uint32_t> still = render_pixels(state);
+                state.shake = static_cast<uint16_t>(timer);
+                const std::vector<uint32_t> shaken = render_pixels(state);
+
+                const Displacement shift = recover_displacement(shaken, still);
+                peak_dx = std::max(peak_dx, std::abs(shift.dx));
+                peak_dy = std::max(peak_dy, std::abs(shift.dy));
+                worst_margin = std::min(worst_margin, shift.margin);
+                const std::pair<int, int> offset{shift.dx, shift.dy};
+                if (std::find(distinct.begin(), distinct.end(), offset) == distinct.end()) {
+                    distinct.push_back(offset);
+                }
+            }
+
+            CAPTURE(timer, peak_dx, peak_dy, worst_margin, distinct.size());
+            // The recovered shift must be decisive, or the numbers below mean
+            // nothing. Measured margin is over 1100 matching pixels.
+            CHECK(worst_margin > 200);
+            CHECK(peak_dx == expected_peak);
+            CHECK(peak_dy == expected_peak);
+            // A shake that lands on one fixed offset is a nudge, not a shake.
+            CHECK(distinct.size() > 1);
+        }
+    }
 }

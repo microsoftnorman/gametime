@@ -413,9 +413,15 @@ ReplayResult run_replay(std::uint32_t seed, const InputScript &script) {
 
     // Fold every intermediate tick into a rolling hash, not just the last one.
     // A final-state digest is blind to anything transient: hit flashes, hurt
-    // flashes, knockback, muzzle flash, screen shake and every event that has
-    // already decayed or been drained by tick 600. Changing HURT_FLASH_TICKS
-    // from 9 to 12 was verified to leave the final-state digest untouched.
+    // flashes, knockback, muzzle flash and every event that has already decayed
+    // or been drained by tick 600. Changing HURT_FLASH_TICKS from 9 to 12 was
+    // verified to leave the final-state digest untouched.
+    //
+    // GameState::shake is deliberately NOT in that list. It is serialized, so it
+    // is inside the digest boundary, but no simulation path ever writes it - a
+    // lethal damage run was measured to leave it at 0 on every tick - so folding
+    // it in cannot catch anything. See "state: nothing in the simulation raises
+    // the screen shake timer" below.
     std::uint64_t trajectory = FNV_OFFSET_BASIS;
     script.for_each_tick([&](const eh::InputFrame &frame) {
         eh::tick(state, frame);
@@ -796,4 +802,65 @@ TEST_CASE("state: a tick reports only the events it produced") {
     CAPTURE(high_water, empty_ticks);
     CHECK(high_water <= 16);
     CHECK(empty_ticks > 300);
+}
+
+// mvp.md milestone 10 lists screen shake beside distance fog, hit flash and
+// knockback as the "a game that feels good" deliverables, and its cut list
+// (line 266) puts audio ahead of shake, so shake was not due to be dropped.
+// GameState::shake exists, hud.cpp reads it and offsets every HUD element by up
+// to three pixels from it -- and nothing in src/core ever writes it. The field
+// has a consumer, a serializer entry and no producer at all.
+//
+// Measured rather than read: an egg parked on the player for 3000 ticks lands 9
+// PlayerHurt events, drives health to 0 and pushes hurt_flash to its full 9
+// ticks, so the damage path is genuinely entered over and over. shake never
+// leaves 0, including on the killing blow.
+//
+// This states today's behaviour instead of implying a better one. Whether the
+// HUD should rattle when you are hit is a feel question that belongs to a
+// playtest, not to code inspection. If anyone wires it up, this test fails and
+// names the two things to revisit: the pinned trajectory digests above, which
+// will move once shake becomes a live transient, and the render-side contract
+// in test_hud.cpp that already pins what the HUD does with a non-zero value.
+TEST_CASE("state: nothing in the simulation raises the screen shake timer") {
+    eh::GameState state;
+    eh::reset(state, 0x5eed1234u);
+
+    // Park one egg on the player so the attack path cannot be missed. A test
+    // that never takes damage would satisfy "shake stays 0" for the wrong
+    // reason.
+    bool placed = false;
+    for (eh::Entity &entity : state.entities) {
+        if (entity.type == eh::EntityType::Egg) {
+            entity.x = state.player.x + eh::FX_ONE / 4;
+            entity.y = state.player.y;
+            entity.ai = eh::AiState::Chase;
+            placed = true;
+            break;
+        }
+    }
+    REQUIRE(placed);
+
+    int hurt_events = 0;
+    int max_hurt_flash = 0;
+    int max_shake = 0;
+    for (int t = 0; t < 600; ++t) {
+        eh::tick(state, eh::InputFrame{});
+        for (const eh::GameEvent &event : state.events) {
+            if (event.type == eh::EventType::PlayerHurt) {
+                ++hurt_events;
+            }
+        }
+        max_hurt_flash = std::max(max_hurt_flash, static_cast<int>(state.player.hurt_flash));
+        max_shake = std::max(max_shake, static_cast<int>(state.shake));
+    }
+
+    // Non-vacuity: the player really was hurt, repeatedly, and the neighbouring
+    // feedback timer really did fire.
+    CAPTURE(hurt_events, max_hurt_flash, static_cast<int>(state.player.health));
+    REQUIRE(hurt_events > 0);
+    REQUIRE(max_hurt_flash > 0);
+    REQUIRE(state.player.health < 100);
+
+    CHECK(max_shake == 0);
 }
