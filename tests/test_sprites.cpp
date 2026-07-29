@@ -249,6 +249,59 @@ TEST_CASE("sprites: weapon bob traverses both horizontal extremes in one normali
     REQUIRE(maximum_offset >= 4);
 }
 
+// Both sides of the bob seam were pinned -- player_tick advances the normalized phase, and the
+// two tests above pin the horizontal sweep -- but nothing named the vertical channel. Deleting
+// the bounce outright, or halving its frequency, left the whole suite green. The weapon slid
+// side to side without ever stepping.
+TEST_CASE("sprites: the weapon dips four times per left-right sweep") {
+    constexpr int STEPS = 16;
+
+    eh::GameState state = state_facing_east();
+    state.player.bob = 0;
+    GuardedFramebuffer rest_buffer;
+    eh::render_weapon(state, rest_buffer.framebuffer);
+    const PixelBounds rest_bounds = modified_bounds(rest_buffer);
+    REQUIRE(rest_bounds.valid());
+
+    std::array<int, STEPS + 1> drop{};
+    std::array<int, STEPS + 1> sway{};
+    for (int step = 0; step <= STEPS; ++step) {
+        state.player.bob = static_cast<eh::fx>((static_cast<int64_t>(eh::FX_ONE) * step) / STEPS);
+        GuardedFramebuffer buffer;
+        eh::render_weapon(state, buffer.framebuffer);
+        const PixelBounds bounds = modified_bounds(buffer);
+        REQUIRE(bounds.valid());
+        REQUIRE(buffer.guards_intact());
+        drop[static_cast<std::size_t>(step)] = bounds.top - rest_bounds.top;
+        sway[static_cast<std::size_t>(step)] = bounds.left - rest_bounds.left;
+    }
+
+    // The weapon only ever dips below where it rests; it never floats above it.
+    for (int step = 0; step <= STEPS; ++step) {
+        CAPTURE(step);
+        REQUIRE(drop[static_cast<std::size_t>(step)] >= 0);
+    }
+
+    // Four footfalls: back at rest on every quarter of the cycle, at its lowest halfway between.
+    // A single-frequency bounce would put a peak on the quarters instead of a rest point.
+    for (int quarter = 0; quarter <= 4; ++quarter) {
+        CAPTURE(quarter);
+        REQUIRE(drop[static_cast<std::size_t>(quarter * 4)] == 0);
+    }
+    for (int footfall = 0; footfall < 4; ++footfall) {
+        CAPTURE(footfall);
+        REQUIRE(drop[static_cast<std::size_t>(footfall * 4 + 2)] >= 4);
+    }
+
+    // Exactly one horizontal sweep spans the same window, which is what makes the dips read as
+    // four per sweep rather than merely four dips.
+    REQUIRE(sway[0] == 0);
+    REQUIRE(sway[8] == 0);
+    REQUIRE(sway[16] == 0);
+    REQUIRE(sway[4] > 0);
+    REQUIRE(sway[12] < 0);
+}
+
 // Every sprite test above asserts a relational or safety property: stays in
 // bounds, occludes correctly, is visible in the open, orders stably. All of them
 // hold when a billboard renders at a constant size regardless of distance.
