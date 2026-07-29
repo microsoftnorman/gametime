@@ -389,6 +389,170 @@ TEST_CASE("hud: the readouts report the values, not merely react to them") {
     }
 }
 
+namespace {
+
+// Identifies a screen by the words it prints, without reproducing any of hud.cpp's layout
+// arithmetic: an ink mask is built from the shipped font and searched for in the render, so
+// position and scale are *discovered* rather than asserted. Moving or resizing a banner keeps
+// this passing; changing what it says does not.
+//
+// draw_text lays a one-pixel-offset shadow glyph under the coloured one, so "differs from the
+// background" spans two colours. Matching only pixels equal to the probe colour isolates the
+// top layer, which is the part the real screen draws in a single uniform colour.
+struct GlyphMask {
+    std::vector<int> ink_x, ink_y; // must all carry one colour
+    std::vector<int> gap_x, gap_y; // must all carry a different one
+    int w = 0;
+    int h = 0;
+};
+
+constexpr int MASK_PAD = 4;
+constexpr int MIN_TEXT_SCALE = 2;
+constexpr int MAX_TEXT_SCALE = 7;
+
+GlyphMask glyph_mask(std::string_view text, int scale) {
+    constexpr uint32_t PROBE = 0xffffffffu;
+    GuardedFramebuffer scratch;
+    eh::hud_detail::draw_text(scratch.framebuffer, MASK_PAD, MASK_PAD, text, scale, PROBE);
+    const std::vector<uint32_t> pixels = scratch.image();
+
+    GlyphMask mask;
+    int max_x = 0;
+    int max_y = 0;
+    for (int y = 0; y < eh::Framebuffer::H; ++y) {
+        for (int x = 0; x < eh::Framebuffer::W; ++x) {
+            if (pixels[static_cast<std::size_t>(y) * eh::Framebuffer::W + x] != PROBE) {
+                continue;
+            }
+            mask.ink_x.push_back(x - MASK_PAD);
+            mask.ink_y.push_back(y - MASK_PAD);
+            max_x = std::max(max_x, x - MASK_PAD);
+            max_y = std::max(max_y, y - MASK_PAD);
+        }
+    }
+    if (mask.ink_x.empty() || max_x + MASK_PAD >= eh::Framebuffer::W - 1) {
+        return {}; // empty, or clipped by the framebuffer edge and so not a whole word
+    }
+
+    mask.w = max_x + 1;
+    mask.h = max_y + 1;
+    for (int y = 0; y < mask.h; ++y) {
+        for (int x = 0; x < mask.w; ++x) {
+            const std::size_t index =
+                static_cast<std::size_t>(y + MASK_PAD) * eh::Framebuffer::W + x + MASK_PAD;
+            if (pixels[index] != PROBE) {
+                mask.gap_x.push_back(x);
+                mask.gap_y.push_back(y);
+            }
+        }
+    }
+    return mask;
+}
+
+// A match needs both halves: every glyph pixel carrying one colour, and no pixel between the
+// strokes carrying it too. Without the second half any flat region matches, and the end screens
+// are mostly flat overlay - which is also why the gaps are probed first.
+bool mask_appears(const std::vector<uint32_t> &screen, const GlyphMask &mask) {
+    if (mask.ink_x.empty() || mask.gap_x.empty()) {
+        return false;
+    }
+    const std::size_t probes = std::min<std::size_t>(24, mask.gap_x.size());
+    const std::size_t stride = mask.gap_x.size() / probes;
+    const std::size_t middle = mask.ink_x.size() / 2;
+
+    for (int y0 = 0; y0 + mask.h <= eh::Framebuffer::H; ++y0) {
+        for (int x0 = 0; x0 + mask.w <= eh::Framebuffer::W; ++x0) {
+            const auto at = [&](int dx, int dy) {
+                return screen[static_cast<std::size_t>(y0 + dy) * eh::Framebuffer::W + x0 + dx];
+            };
+            const uint32_t ink = at(mask.ink_x[0], mask.ink_y[0]);
+            if (at(mask.ink_x[middle], mask.ink_y[middle]) != ink) {
+                continue;
+            }
+            bool ok = true;
+            for (std::size_t i = 0; i < probes && ok; ++i) {
+                const std::size_t j = i * stride;
+                ok = at(mask.gap_x[j], mask.gap_y[j]) != ink;
+            }
+            for (std::size_t i = 1; i < mask.ink_x.size() && ok; ++i) {
+                ok = at(mask.ink_x[i], mask.ink_y[i]) == ink;
+            }
+            for (std::size_t i = 0; i < mask.gap_x.size() && ok; ++i) {
+                ok = at(mask.gap_x[i], mask.gap_y[i]) != ink;
+            }
+            if (ok) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool screen_says(const std::vector<uint32_t> &screen, std::string_view text) {
+    for (int scale = MIN_TEXT_SCALE; scale <= MAX_TEXT_SCALE; ++scale) {
+        if (mask_appears(screen, glyph_mask(text, scale))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<uint32_t> screen_pixels(eh::Screen screen) {
+    eh::GameState state = playing_state();
+    state.screen = screen;
+    return render_pixels(state);
+}
+
+} // namespace
+
+// Rendering the winning end screen for Screen::Lost passed 119/119, and rendering the losing
+// one for Screen::Won passed 119/119 as well: the suite asked only whether each screen "draws a
+// visible overlay". That is reaction, not reporting - so the game could congratulate a player
+// who had just been killed, and every test would still be green.
+//
+// The positive checks below are what keep the negative ones honest. The first version of this
+// matcher was broken and reported every phrase absent from every screen, which would have
+// satisfied a test made only of CHECK_FALSE.
+TEST_CASE("hud: each screen says which screen it is") {
+    constexpr std::string_view TITLE_BANNER = "EGG HUNT";
+    constexpr std::string_view TITLE_PROMPT = "PRESS ENTER TO START";
+    constexpr std::string_view WON_BANNER = "ALL EGGS CRACKED!";
+    constexpr std::string_view LOST_BANNER = "SCRAMBLED!";
+    constexpr std::string_view RETRY_PROMPT = "PRESS R TO PLAY AGAIN";
+
+    SECTION("the title screen names the game and how to start it") {
+        const std::vector<uint32_t> title = screen_pixels(eh::Screen::Title);
+        CHECK(screen_says(title, TITLE_BANNER));
+        CHECK(screen_says(title, TITLE_PROMPT));
+        CHECK_FALSE(screen_says(title, WON_BANNER));
+        CHECK_FALSE(screen_says(title, LOST_BANNER));
+    }
+
+    SECTION("winning reports the win, and only the win") {
+        const std::vector<uint32_t> won = screen_pixels(eh::Screen::Won);
+        CHECK(screen_says(won, WON_BANNER));
+        CHECK(screen_says(won, RETRY_PROMPT));
+        CHECK_FALSE(screen_says(won, LOST_BANNER));
+        CHECK_FALSE(screen_says(won, TITLE_BANNER));
+    }
+
+    SECTION("losing reports the loss, and never the win") {
+        const std::vector<uint32_t> lost = screen_pixels(eh::Screen::Lost);
+        CHECK(screen_says(lost, LOST_BANNER));
+        CHECK(screen_says(lost, RETRY_PROMPT));
+        CHECK_FALSE(screen_says(lost, WON_BANNER));
+        CHECK_FALSE(screen_says(lost, TITLE_BANNER));
+    }
+
+    SECTION("the playing HUD carries no end-of-game banner at all") {
+        const std::vector<uint32_t> playing = screen_pixels(eh::Screen::Playing);
+        CHECK_FALSE(screen_says(playing, TITLE_BANNER));
+        CHECK_FALSE(screen_says(playing, WON_BANNER));
+        CHECK_FALSE(screen_says(playing, LOST_BANNER));
+        CHECK_FALSE(screen_says(playing, RETRY_PROMPT));
+    }
+}
+
 TEST_CASE("hud: unsupported font characters use a safe fallback glyph") {
     GuardedFramebuffer target;
     const std::string unsupported(1, static_cast<char>(0xff));
