@@ -224,6 +224,75 @@ TEST_CASE("raycast: open east corridor is deeper than the nearby north wall") {
     REQUIRE(corridor_distance > near_wall_distance);
 }
 
+TEST_CASE("raycast: opposite wall faces present the texture in the same orientation") {
+    eh::GameState game;
+    eh::reset(game, 0x1234567u);
+    eh::init_textures();
+    TestFramebuffer target;
+
+    // A symmetric room: identical wall tiles on all four borders and the player
+    // exactly in the middle, so every view is the same texture at the same
+    // distance under the same shading. The only variable left is which face is
+    // being sampled, and therefore whether the renderer mirrors it correctly.
+    //
+    // The existing shading test above samples these same pixels but collapses
+    // them with a mean, and a mean is invariant to reversing column order. Both
+    // halves of the face-correction were verified to survive the whole suite
+    // (105/105) with this asymmetry unpinned, so the comparison here is
+    // deliberately sequence-by-sequence rather than aggregated.
+    constexpr int ROOM = 9;
+    eh::Map &map = game.level.map;
+    map.width = ROOM;
+    map.height = ROOM;
+    map.tiles.assign(static_cast<std::size_t>(ROOM) * static_cast<std::size_t>(ROOM),
+                     eh::Tile::Floor);
+    for (int i = 0; i < ROOM; ++i) {
+        const auto index = [](int x, int y) { return static_cast<std::size_t>(y * ROOM + x); };
+        map.tiles[index(i, 0)] = eh::Tile::WallPantry;
+        map.tiles[index(i, ROOM - 1)] = eh::Tile::WallPantry;
+        map.tiles[index(0, i)] = eh::Tile::WallPantry;
+        map.tiles[index(ROOM - 1, i)] = eh::Tile::WallPantry;
+    }
+    game.player.x = eh::fx_from_float(4.5f);
+    game.player.y = eh::fx_from_float(4.5f);
+
+    // Every border face is exactly 3.5 tiles from the middle, so the wall spans
+    // roughly rows 128..231 and this row sits mid-texture in all four views.
+    constexpr int ROW = 180;
+
+    auto scanline = [&](double degrees) {
+        game.player.angle = eh::angle_from_deg(degrees);
+        eh::render_walls(game, target.framebuffer);
+        std::vector<uint32_t> row;
+        for (int column = 0; column < eh::Framebuffer::W; ++column) {
+            // Guards that the whole strip really is the one flat facing wall.
+            REQUIRE(std::abs(target.depth[static_cast<std::size_t>(column)] - 3.5f) < 0.001f);
+            row.push_back(target.pixels[static_cast<std::size_t>(ROW) * eh::Framebuffer::W +
+                                        static_cast<std::size_t>(column)]);
+        }
+        return row;
+    };
+
+    const std::vector<uint32_t> east = scanline(0.0);
+    const std::vector<uint32_t> west = scanline(180.0);
+    const std::vector<uint32_t> north = scanline(270.0);
+    const std::vector<uint32_t> south = scanline(90.0);
+
+    // Non-vacuity first: the sampled strip has to be materially asymmetric, or
+    // "the two views agree" would hold however the renderer oriented the
+    // texture. A future symmetric texture fails here loudly instead of quietly
+    // turning the orientation assertions into tautologies.
+    const std::vector<uint32_t> east_reversed(east.rbegin(), east.rend());
+    REQUIRE(east != east_reversed);
+    const std::vector<uint32_t> north_reversed(north.rbegin(), north.rend());
+    REQUIRE(north != north_reversed);
+
+    // Both axes are checked because the correction is two independent clauses,
+    // and each was confirmed to survive the suite on its own.
+    REQUIRE(east == west);
+    REQUIRE(north == south);
+}
+
 TEST_CASE("raycast: walls facing along Y are shaded darker than walls facing along X") {
     eh::GameState game;
     eh::reset(game, 0x1234567u);
