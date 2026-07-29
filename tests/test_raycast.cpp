@@ -45,6 +45,40 @@ Direction ray_direction(eh::angle_t player_angle, int column) {
     return {direction_x + plane_x * camera_x, direction_y + plane_y * camera_x};
 }
 
+// Free functions rather than lambdas: a non-capturing lambda nested inside a
+// capturing one cannot reach an enclosing constexpr it odr-uses under GCC, which
+// MSVC accepts silently.
+double luma(uint32_t color) {
+    const double r = static_cast<double>(color & 0xffu);
+    const double g = static_cast<double>((color >> 8) & 0xffu);
+    const double b = static_cast<double>((color >> 16) & 0xffu);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+// Mean luminance of one screen row across a central band of columns. The band
+// matters: the outermost columns of a flat face quantise to a wall one pixel
+// shorter, which mixes background into the extreme rows -- exactly the rows a
+// top-versus-bottom comparison depends on.
+double row_band_mean(const std::vector<uint32_t> &frame, int row) {
+    double sum = 0.0;
+    int counted = 0;
+    for (int column = 240; column < 400; ++column) {
+        sum += luma(frame[static_cast<std::size_t>(row) * eh::Framebuffer::W + column]);
+        ++counted;
+    }
+    return sum / counted;
+}
+
+// Mean of the first or last tenth of a profile.
+double decile_mean(const std::vector<double> &profile, bool from_top) {
+    const std::size_t count = std::max<std::size_t>(1, profile.size() / 10);
+    double sum = 0.0;
+    for (std::size_t i = 0; i < count; ++i) {
+        sum += from_top ? profile[i] : profile[profile.size() - 1 - i];
+    }
+    return sum / static_cast<double>(count);
+}
+
 } // namespace
 
 TEST_CASE("raycast: wall textures are distinct and coordinates wrap safely") {
@@ -652,5 +686,151 @@ TEST_CASE("textures: each wall tile draws the artwork its own swatch describes")
                 CHECK(own * 4.0 < other);
             }
         }
+    }
+}
+
+// Finding #63. The wall texture has two independent axes and only one of them was
+// pinned. `raycast: wall texture orientation matches on both wall axes` compares
+// opposite FACES, so a mutation that treats every face identically cancels on both
+// sides of its own comparison -- the same relative-comparison blind spot finding #60
+// found in the damage flash. And `raycast: a wall tile shows exactly one full texture
+// period` is named for the vertical period but asserts only that the wall's upper and
+// lower halves DIFFER, which is one-sided.
+//
+// Measured against the shipped suite:
+//
+//   walls drawn upside down                    133/133 PASS -- undetected
+//   texture stepped twice as fast down a wall  133/133 PASS -- undetected
+//   the vertical cursor frozen (smeared walls)  2 failed -- already covered
+//
+// The middle one is the sharp case, because it survives a test whose name claims it.
+// texture_position is CLAMPED, not wrapped, so at double rate the wall reaches the
+// last texel row halfway down and holds it: the bottom half becomes one flat smear,
+// which is maximally UNLIKE the top half. The existing "the halves must differ"
+// assertion is satisfied by the bug, for the wrong reason.
+//
+// So the vertical channel had presence (the frozen-cursor case is caught) but neither
+// orientation nor scale -- finding #59's presence/extent/shape split, one axis over.
+//
+// Both sections below read the artwork through the public sampler and the picture
+// through the framebuffer, and reproduce no coordinate arithmetic from raycast.cpp.
+TEST_CASE("raycast: a wall face steps down its own texture from the top edge") {
+    eh::init_textures();
+    eh::GameState game;
+    eh::reset(game, 0x5eed1234u);
+
+    constexpr int ROOM = 7;
+    eh::Map &map = game.level.map;
+    map.width = ROOM;
+    map.height = ROOM;
+    map.tiles.assign(static_cast<std::size_t>(ROOM) * static_cast<std::size_t>(ROOM),
+                     eh::Tile::Floor);
+    for (int i = 0; i < ROOM; ++i) {
+        map.tiles[static_cast<std::size_t>(i)] = eh::Tile::WallPantry;
+        map.tiles[static_cast<std::size_t>((ROOM - 1) * ROOM + i)] = eh::Tile::WallPantry;
+        map.tiles[static_cast<std::size_t>(i * ROOM)] = eh::Tile::WallPantry;
+        map.tiles[static_cast<std::size_t>(i * ROOM + ROOM - 1)] = eh::Tile::WallPantry;
+    }
+    game.player.x = eh::fx_from_float(3.5f);
+    game.player.y = eh::fx_from_float(3.5f);
+    game.player.angle = eh::angle_from_deg(0.0);
+
+    TestFramebuffer target;
+
+    // Wall pixels are identified by differing from a render of the same room with no
+    // walls in it, rather than by assuming where the renderer puts them.
+    eh::GameState empty = game;
+    empty.level.map.tiles.assign(static_cast<std::size_t>(ROOM) * static_cast<std::size_t>(ROOM),
+                                 eh::Tile::Floor);
+    eh::render_walls(empty, target.framebuffer);
+    const std::vector<uint32_t> background = target.pixels;
+
+    eh::render_walls(game, target.framebuffer);
+    const std::vector<uint32_t> wall = target.pixels;
+
+    int top = -1;
+    int bottom = -1;
+    for (int y = 0; y < eh::Framebuffer::H; ++y) {
+        const std::size_t at = static_cast<std::size_t>(y) * eh::Framebuffer::W + 320;
+        if (wall[at] != background[at]) {
+            if (top < 0) {
+                top = y;
+            }
+            bottom = y;
+        }
+    }
+    REQUIRE(top >= 0);
+    const int height = bottom - top + 1;
+
+    // The face must be flat, or "the top of the wall" is not one texture row across
+    // the band, and it must be magnified, or a smear is not resolvable from a texel.
+    for (int column = 0; column < eh::Framebuffer::W; ++column) {
+        REQUIRE(std::abs(target.depth[static_cast<std::size_t>(column)] - 2.5f) < 0.001f);
+    }
+    REQUIRE(height > 2 * eh::WALL_TEXTURE_SIZE);
+
+    SECTION("the wall's dark end is the texture's dark end, not its mirror") {
+        // The artwork's own vertical asymmetry, measured through the public sampler.
+        // The pantry texture carries a dark mortar band across its first rows, so its
+        // top decile is materially darker than its bottom decile.
+        std::vector<double> texture_profile;
+        for (int y = 0; y < eh::WALL_TEXTURE_SIZE; ++y) {
+            double sum = 0.0;
+            for (int x = 0; x < eh::WALL_TEXTURE_SIZE; ++x) {
+                sum += luma(eh::sample_wall(eh::Tile::WallPantry, x, y));
+            }
+            texture_profile.push_back(sum / eh::WALL_TEXTURE_SIZE);
+        }
+
+        std::vector<double> rendered_profile;
+        for (int y = top; y <= bottom; ++y) {
+            rendered_profile.push_back(row_band_mean(wall, y));
+        }
+
+        const double texture_ratio =
+            decile_mean(texture_profile, true) / decile_mean(texture_profile, false);
+        const double rendered_ratio =
+            decile_mean(rendered_profile, true) / decile_mean(rendered_profile, false);
+        CAPTURE(texture_ratio, rendered_ratio);
+
+        // Non-vacuity, and a live alarm if the art is ever retouched: if the texture
+        // stopped being asymmetric top-to-bottom, no rendering of it could witness a
+        // flip, and this test would silently become an assertion about nothing.
+        REQUIRE(std::abs(texture_ratio - 1.0) > 0.05);
+
+        // Direction only, deliberately. Magnitude would also move under an unrelated
+        // change to the vertical sampling RATE, which the next section owns; keeping
+        // this to the sign is what lets each section fail on its own defect.
+        CHECK(std::abs(rendered_ratio - 1.0) > 0.05);
+        CHECK(((texture_ratio < 1.0) == (rendered_ratio < 1.0)));
+    }
+
+    SECTION("no single texture row is smeared down the wall") {
+        int longest_run = 1;
+        int run = 1;
+        int distinct_runs = 1;
+        for (int y = top + 1; y <= bottom; ++y) {
+            const std::size_t here = static_cast<std::size_t>(y) * eh::Framebuffer::W + 320;
+            const std::size_t above = static_cast<std::size_t>(y - 1) * eh::Framebuffer::W + 320;
+            if (wall[here] == wall[above]) {
+                ++run;
+                longest_run = std::max(longest_run, run);
+            } else {
+                run = 1;
+                ++distinct_runs;
+            }
+        }
+        CAPTURE(longest_run, distinct_runs, height);
+
+        // Non-vacuity: a column that is one flat colour, or nearly so, would satisfy
+        // any upper bound on its longest run for the wrong reason.
+        REQUIRE(distinct_runs > 4);
+
+        // The wall steps CONTINUOUSLY through the texture, so no texel row may occupy
+        // a third of the face. Sampling past the last row clamps rather than wraps, so
+        // any rate that overruns the texture parks on its final row and smears it over
+        // everything below -- measured at 30 of 144 rows on the shared constant
+        // against 73 of 144 at double rate.
+        CHECK(longest_run * 100 < 35 * height);
     }
 }
