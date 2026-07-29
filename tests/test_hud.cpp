@@ -97,6 +97,17 @@ int longest_changed_run(const std::vector<uint32_t> &image, const std::vector<ui
     return longest;
 }
 
+// Red-channel difference between a hurt and a calm render at one pixel. render_hud
+// draws over a uniform background, so this isolates the vignette's blend alpha at that
+// pixel without reproducing the blend itself: any other HUD art appears identically in
+// both images and subtracts away.
+int vignette_delta(const std::vector<uint32_t> &hurt, const std::vector<uint32_t> &calm, int x,
+                   int y) {
+    const std::size_t index =
+        static_cast<std::size_t>(y) * eh::Framebuffer::W + static_cast<std::size_t>(x);
+    return static_cast<int>(hurt[index] & 0xffu) - static_cast<int>(calm[index] & 0xffu);
+}
+
 } // namespace
 
 TEST_CASE("hud: rendering never writes outside the framebuffer") {
@@ -720,5 +731,111 @@ TEST_CASE("hud: the objective prompt appears only once the last egg is cracked")
         // would satisfy the inequality above while making the instruction unreadable.
         CHECK(screen_says(first, OBJECTIVE_PROMPT));
         CHECK(screen_says(second, OBJECTIVE_PROMPT));
+    }
+}
+
+// The vignette is the game's only damage feedback outside the health bar, and finding
+// #15 pinned that it appears, reddens the corners, spares the centre, and fades as the
+// flash expires. It pins nothing about the shape of either curve, and five of six
+// mutants to the curves survive the whole suite:
+//
+//   spatial falloff made flat (a hard-edged red border, no gradient)   130/130 passed
+//   band depth 44 -> 22                                               130/130 passed
+//   fade slope 15 -> 20 per tick                                      130/130 passed
+//   alpha cap 180 -> 90                                               130/130 passed
+//   hurt_flash assigned rather than max-ed                            130/130 passed
+//   spatial falloff inverted                                          caught by #15
+//
+// Only the fully inverted gradient dies, because #15 samples the outermost corner and
+// nothing else. Everything between the edge and the centre is unconstrained.
+//
+// The numbers below were read out of a running binary rather than derived. render_hud
+// draws over a uniform background here, so the red delta between a calm and a hurt
+// render is a clean function of the blend alpha at that pixel and this test does no
+// arithmetic beyond that subtraction.
+//
+// Two honest limitations. The shipped alpha cap of 180 is unreachable: HURT_FLASH_TICKS
+// is 9, so peak alpha never exceeds 135 and the std::min can never choose its first
+// argument. The section below pins the effective peak and would catch a cap that starts
+// binding, but the literal 180 is dead until the flash duration passes 12 ticks. And the
+// std::max at entities.cpp:199 is provably inert -- hurt_flash is only ever written to
+// HURT_FLASH_TICKS and only ever decremented, so it lives in [0, 9] and max(x, 9) is 9
+// for every value it can hold. That mutant is recorded, not tested.
+TEST_CASE("hud: the damage vignette is a gradient of a measured depth and intensity") {
+    eh::GameState calm = playing_state();
+    const std::vector<uint32_t> calm_pixels = render_pixels(calm);
+
+    const int mid_x = eh::Framebuffer::W / 2;
+    const int mid_y = eh::Framebuffer::H / 2;
+
+    SECTION("the red falls off smoothly inward instead of stopping at a border") {
+        eh::GameState hurt = playing_state();
+        hurt.player.hurt_flash = 9;
+        const std::vector<uint32_t> hurt_pixels = render_pixels(hurt);
+
+        // Down from the top edge and in from the left edge, so both arms of the
+        // distance term are exercised.
+        const std::vector<int> depths = {0, 5, 11, 22, 33, 42};
+        int previous_vertical = 1000;
+        int previous_horizontal = 1000;
+        for (int depth : depths) {
+            const int vertical = vignette_delta(hurt_pixels, calm_pixels, mid_x, depth);
+            const int horizontal = vignette_delta(hurt_pixels, calm_pixels, depth, mid_y);
+            CAPTURE(depth, vertical, horizontal);
+            CHECK(vertical < previous_vertical);
+            CHECK(horizontal < previous_horizontal);
+            previous_vertical = vertical;
+            previous_horizontal = horizontal;
+        }
+        // Non-vacuity: a decreasing sequence of zeros would satisfy the loop above.
+        // Deliberately far below the tuned peak -- intensity is section three's
+        // contract, and this guard must not quietly duplicate it.
+        CHECK(vignette_delta(hurt_pixels, calm_pixels, mid_x, 0) > 5);
+    }
+
+    SECTION("the band is exactly forty-four pixels deep on all four edges") {
+        eh::GameState hurt = playing_state();
+        hurt.player.hurt_flash = 9;
+        const std::vector<uint32_t> hurt_pixels = render_pixels(hurt);
+
+        CHECK(vignette_delta(hurt_pixels, calm_pixels, mid_x, 43) > 0);
+        CHECK(vignette_delta(hurt_pixels, calm_pixels, mid_x, 44) == 0);
+        CHECK(vignette_delta(hurt_pixels, calm_pixels, mid_x, eh::Framebuffer::H - 44) > 0);
+        CHECK(vignette_delta(hurt_pixels, calm_pixels, mid_x, eh::Framebuffer::H - 45) == 0);
+        CHECK(vignette_delta(hurt_pixels, calm_pixels, 43, mid_y) > 0);
+        CHECK(vignette_delta(hurt_pixels, calm_pixels, 44, mid_y) == 0);
+        CHECK(vignette_delta(hurt_pixels, calm_pixels, eh::Framebuffer::W - 44, mid_y) > 0);
+        CHECK(vignette_delta(hurt_pixels, calm_pixels, eh::Framebuffer::W - 45, mid_y) == 0);
+
+        // And nothing deeper than the band moves at all, so a wider vignette cannot
+        // hide behind the edge samples above.
+        int changed_inside = 0;
+        for (int y = 44; y < eh::Framebuffer::H - 44; ++y) {
+            for (int x = 44; x < eh::Framebuffer::W - 44; ++x) {
+                if (vignette_delta(hurt_pixels, calm_pixels, x, y) != 0) {
+                    ++changed_inside;
+                }
+            }
+        }
+        CHECK(changed_inside == 0);
+    }
+
+    SECTION("peak intensity is a fixed step per remaining flash tick") {
+        // Measured at the outermost ring, where the spatial term is 1. Nine ticks is a
+        // full flash; the rest are points along the fade.
+        const std::vector<std::pair<uint16_t, int>> expected = {{9, 49}, {6, 33}, {3, 16}, {1, 5}};
+        for (const auto &[flash, delta] : expected) {
+            eh::GameState hurt = playing_state();
+            hurt.player.hurt_flash = flash;
+            const std::vector<uint32_t> hurt_pixels = render_pixels(hurt);
+            const int measured = vignette_delta(hurt_pixels, calm_pixels, mid_x, 0);
+            CAPTURE(flash, measured, delta);
+            CHECK(measured == delta);
+        }
+
+        // An expired flash paints nothing at all.
+        eh::GameState expired = playing_state();
+        expired.player.hurt_flash = 0;
+        CHECK(render_pixels(expired) == calm_pixels);
     }
 }
