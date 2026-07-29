@@ -199,6 +199,68 @@ int longest_constant_run(const Target &frame, int column) {
     return std::max(longest, run);
 }
 
+// An egg attacks when it is within EGG_ATTACK_RANGE -- 0.75 tiles (entities.cpp) -- so the
+// frames that matter most in this game are the ones where an egg is right in your face. No
+// fixture in the suite ever rendered a sprite closer than about two tiles, and measured against
+// the shipped suite the entire near field of the billboard renderer was unpinned:
+//
+//   NEAR_PLANE 0.05 -> 1.00 (an egg inside one tile vanishes)     passed 137/137
+//   NEAR_PLANE 0.05 -> 1.75                                        passed 137/137
+//   projected height ceilinged at one screen                       passed 137/137
+//   projected width ceilinged at one screen                        passed 137/137
+//   sprite depth clamped to 1.0 tile, so it stops growing          passed 137/137
+//   NEAR_PLANE routed through a named local (control)              passed 137/137
+//
+// The first is the sharpest: an egg would blink out of existence exactly as it closed to hurt
+// you, and CI stayed green. Raising it to 2.0 finally killed five tests, which locates every
+// sprite fixture in the suite at two tiles or farther.
+//
+// It survived because the one fixture that does place an egg near the player -- scene(), at 1.2
+// tiles -- has its sprite layer guarded only by `walls.pixels != with_sprites.pixels`, and
+// reset() populates the level with its own distant entities. Those satisfy the guard on their
+// own, so the near egg it deliberately places can vanish without failing anything.
+//
+// The first version of this test caught four of those five and still let the width ceiling
+// through 138/138: a ceiling compresses the growth curve without inverting it, so an ordering
+// assertion cannot see it. That is why the magnitude assertion at contact range is here.
+eh::GameState egg_corridor(float depth) {
+    constexpr int ROWS = 5;
+    constexpr int COLUMNS = 34;
+    constexpr float PLAYER_X = 1.5f;
+    constexpr float PLAYER_Y = 2.5f;
+
+    eh::GameState game;
+    eh::reset(game, 0x5eed1234u);
+    game.screen = eh::Screen::Playing;
+    game.entities.clear();
+
+    eh::Map &map = game.level.map;
+    map.width = COLUMNS;
+    map.height = ROWS;
+    map.tiles.assign(static_cast<std::size_t>(COLUMNS) * ROWS, eh::Tile::Floor);
+    for (int x = 0; x < COLUMNS; ++x) {
+        map.tiles[static_cast<std::size_t>(x)] = eh::Tile::WallPantry;
+        map.tiles[static_cast<std::size_t>((ROWS - 1) * COLUMNS + x)] = eh::Tile::WallPantry;
+    }
+    for (int y = 0; y < ROWS; ++y) {
+        map.tiles[static_cast<std::size_t>(y * COLUMNS)] = eh::Tile::WallPantry;
+        map.tiles[static_cast<std::size_t>(y * COLUMNS + COLUMNS - 1)] = eh::Tile::WallPantry;
+    }
+
+    game.player.x = eh::fx_from_float(PLAYER_X);
+    game.player.y = eh::fx_from_float(PLAYER_Y);
+    game.player.angle = eh::angle_from_deg(0.0);
+
+    eh::Entity egg;
+    egg.id = 9001;
+    egg.type = eh::EntityType::Egg;
+    egg.x = eh::fx_from_float(PLAYER_X + depth);
+    egg.y = eh::fx_from_float(PLAYER_Y);
+    egg.alive = true;
+    game.entities.push_back(egg);
+    return game;
+}
+
 } // namespace
 
 // The wall camera and the billboard camera each build their own basis from the same player
@@ -943,4 +1005,81 @@ TEST_CASE("render: walking up to a wall magnifies it right through the near fiel
     // single texel row must span more than a third of the screen. Measured 180 of 360.
     INFO("closest sample run " << runs[4]);
     CHECK(runs[4] > eh::Framebuffer::H / 3);
+}
+
+// The billboard renderer's near field. Screen coverage is the instrument because the two
+// obvious alternatives are both blind here: the sprite's on-screen height saturates at the
+// full screen from 1.25 tiles inward, and the width of its changed-pixel box is clipped by
+// the corridor's side walls and is not even monotone (326 px at 0.90, 322 px at 0.75).
+// Measured coverage, out of 230400 pixels, is monotone until the egg fills the screen at 0.3:
+//
+//   depth  2.50   1.50   1.00   0.75   0.50   0.40   0.30
+//   drawn 14990  41652  77438 104512 164850 208904 230400 (whole screen)
+//
+// The sweep therefore stops at 0.5, well clear of saturation.
+TEST_CASE("render: an egg closing to attack range keeps filling more of the screen") {
+    // 0.75 mirrors EGG_ATTACK_RANGE in entities.cpp. It is a fixture choice -- render the egg
+    // at the distance where it starts hurting you -- not an assertion about that constant,
+    // which test_entities owns. Widening the attack range does not make this test wrong.
+    constexpr std::array<float, 5> DEPTHS{2.5f, 1.5f, 1.0f, 0.75f, 0.5f};
+    constexpr int ATTACK_RANGE_SAMPLE = 3;
+    constexpr int TOTAL_PIXELS = eh::Framebuffer::W * eh::Framebuffer::H;
+
+    std::array<int, DEPTHS.size()> drawn{};
+    for (std::size_t i = 0; i < DEPTHS.size(); ++i) {
+        const eh::GameState game = egg_corridor(DEPTHS[i]);
+
+        // render_walls ignores entities, so this is the same wall frame at every depth and
+        // the difference is exactly what the billboard layer contributed.
+        Target walls;
+        eh::render_walls(game, walls.framebuffer);
+
+        Target both;
+        eh::render_walls(game, both.framebuffer);
+        eh::render_sprites(game, both.framebuffer);
+
+        drawn[i] = differing_pixels(both.pixels, walls.pixels);
+        INFO("depth " << DEPTHS[i] << " drew " << drawn[i] << " of " << TOTAL_PIXELS);
+        CHECK(drawn[i] > 0);
+    }
+
+    // An egg at contact range is on screen at all. This is what a near clamp deletes.
+    INFO("at attack range the egg drew " << drawn[ATTACK_RANGE_SAMPLE] << " pixels");
+    CHECK(drawn[ATTACK_RANGE_SAMPLE] > 0);
+
+    // ...and it is close enough to be unmissable, not a handful of stray pixels. Absolute, so
+    // it does not depend on the far samples the way the ordering below does.
+    CHECK(drawn[ATTACK_RANGE_SAMPLE] > TOTAL_PIXELS / 4);
+
+    // It keeps growing the whole way in. A near depth clamp or a projected-size ceiling
+    // freezes this sequence; nothing else in the suite ever reaches the range where they bind.
+    for (std::size_t i = 1; i < DEPTHS.size(); ++i) {
+        INFO("depth " << DEPTHS[i] << " (" << drawn[i] << ") must beat depth " << DEPTHS[i - 1]
+                      << " (" << drawn[i - 1] << ")");
+        CHECK(drawn[i] > drawn[i - 1]);
+    }
+
+    // Non-vacuity: the far end of the sweep must be genuinely small, so a renderer that filled
+    // the screen at every depth could not satisfy the ordering above by standing still.
+    CHECK(drawn[0] < TOTAL_PIXELS / 8);
+
+    // The ordering above pins a sequence, not a scale. A ceiling on projected size compresses
+    // the whole curve while leaving it monotone -- capping width at one screen turned the last
+    // two samples into 127556 and 129208, still increasing, still passing. Only a magnitude
+    // assertion sees it, so this one is absolute: an egg pressed against you blocks the view.
+    constexpr float CONTACT_DEPTH = 0.3f;
+    const eh::GameState contact = egg_corridor(CONTACT_DEPTH);
+
+    Target contact_walls;
+    eh::render_walls(contact, contact_walls.framebuffer);
+
+    Target contact_both;
+    eh::render_walls(contact, contact_both.framebuffer);
+    eh::render_sprites(contact, contact_both.framebuffer);
+
+    const int contact_drawn = differing_pixels(contact_both.pixels, contact_walls.pixels);
+    INFO("at " << CONTACT_DEPTH << " tiles the egg drew " << contact_drawn << " of " << TOTAL_PIXELS
+               << " (shipped renderer covers every pixel; a one-screen width"
+               << " ceiling covers 130776)");
+    CHECK(contact_drawn > TOTAL_PIXELS * 9 / 10);
 }
