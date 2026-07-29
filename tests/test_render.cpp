@@ -335,7 +335,9 @@ TEST_CASE("render: walls and sprites share one horizon but disagree on vertical 
         map.width = COLUMNS;
         map.height = ROWS;
         map.tiles.assign(static_cast<std::size_t>(COLUMNS) * ROWS, eh::Tile::Floor);
-        const auto index = [](int x, int y) { return static_cast<std::size_t>(y * COLUMNS + x); };
+        const auto index = [COLUMNS](int x, int y) {
+            return static_cast<std::size_t>(y * COLUMNS + x);
+        };
         for (int x = 0; x < COLUMNS; ++x) {
             map.tiles[index(x, 0)] = eh::Tile::WallPantry;
             map.tiles[index(x, ROWS - 1)] = eh::Tile::WallPantry;
