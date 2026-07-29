@@ -13,8 +13,7 @@ namespace eh {
 
 namespace {
 
-constexpr int TEXTURE_SIZE = 64;
-constexpr int TEXEL_COUNT = TEXTURE_SIZE * TEXTURE_SIZE;
+constexpr int TEXEL_COUNT = WALL_TEXTURE_SIZE * WALL_TEXTURE_SIZE;
 using Texture = std::array<uint32_t, TEXEL_COUNT>;
 
 std::array<Texture, 4> wall_textures{};
@@ -34,7 +33,9 @@ uint32_t coordinate_hash(int x, int y, uint32_t seed) {
     return value ^ (value >> 16);
 }
 
-std::size_t texel_index(int x, int y) { return static_cast<std::size_t>(y * TEXTURE_SIZE + x); }
+std::size_t texel_index(int x, int y) {
+    return static_cast<std::size_t>(y * WALL_TEXTURE_SIZE + x);
+}
 
 uint32_t fallback_color(Tile tile) {
     switch (tile) {
@@ -69,16 +70,16 @@ int texture_index(Tile tile) {
 }
 
 int wrap_coordinate(int value) {
-    int wrapped = value % TEXTURE_SIZE;
+    int wrapped = value % WALL_TEXTURE_SIZE;
     if (wrapped < 0) {
-        wrapped += TEXTURE_SIZE;
+        wrapped += WALL_TEXTURE_SIZE;
     }
     return wrapped;
 }
 
 void generate_burrow(Texture &texture) {
-    for (int y = 0; y < TEXTURE_SIZE; ++y) {
-        for (int x = 0; x < TEXTURE_SIZE; ++x) {
+    for (int y = 0; y < WALL_TEXTURE_SIZE; ++y) {
+        for (int x = 0; x < WALL_TEXTURE_SIZE; ++x) {
             const uint32_t noise = coordinate_hash(x, y, 0x19a7c35du);
             const int variation = static_cast<int>(noise & 31u) - 15;
             int red = 112 + variation;
@@ -102,8 +103,8 @@ void generate_burrow(Texture &texture) {
 
 void generate_pantry(Texture &texture) {
     constexpr int TILE_SPAN = 16;
-    for (int y = 0; y < TEXTURE_SIZE; ++y) {
-        for (int x = 0; x < TEXTURE_SIZE; ++x) {
+    for (int y = 0; y < WALL_TEXTURE_SIZE; ++y) {
+        for (int x = 0; x < WALL_TEXTURE_SIZE; ++x) {
             const bool grout = x % TILE_SPAN < 2 || y % TILE_SPAN < 2;
             if (grout) {
                 const int variation = static_cast<int>(coordinate_hash(x, y, 0x48f1a2c3u) & 7u);
@@ -126,10 +127,10 @@ void generate_pantry(Texture &texture) {
 void generate_cellar(Texture &texture) {
     constexpr int BLOCK_WIDTH = 16;
     constexpr int BLOCK_HEIGHT = 12;
-    for (int y = 0; y < TEXTURE_SIZE; ++y) {
+    for (int y = 0; y < WALL_TEXTURE_SIZE; ++y) {
         const int block_row = y / BLOCK_HEIGHT;
         const int row_offset = (block_row & 1) * (BLOCK_WIDTH / 2);
-        for (int x = 0; x < TEXTURE_SIZE; ++x) {
+        for (int x = 0; x < WALL_TEXTURE_SIZE; ++x) {
             const int local_x = (x + row_offset) % BLOCK_WIDTH;
             const bool mortar = local_x < 2 || y % BLOCK_HEIGHT < 2;
             if (mortar) {
@@ -152,8 +153,8 @@ void generate_basket(Texture &texture) {
     constexpr std::array<int, 4> STRAND_PROFILE{-18, 18, 9, -11};
     constexpr int STRAND_WIDTH = 4;
 
-    for (int y = 0; y < TEXTURE_SIZE; ++y) {
-        for (int x = 0; x < TEXTURE_SIZE; ++x) {
+    for (int y = 0; y < WALL_TEXTURE_SIZE; ++y) {
+        for (int x = 0; x < WALL_TEXTURE_SIZE; ++x) {
             const bool vertical_over = ((x / STRAND_WIDTH) + (y / STRAND_WIDTH)) % 2 == 0;
             const int strand_position = vertical_over ? x % STRAND_WIDTH : y % STRAND_WIDTH;
             const int grain = static_cast<int>(coordinate_hash(x, y, 0xa24baed4u) & 7u) - 3;

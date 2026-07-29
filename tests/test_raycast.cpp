@@ -450,3 +450,137 @@ TEST_CASE("raycast: rendering preserves pixel and depth guards") {
     REQUIRE(std::all_of(guarded_depth.end() - GUARD_SIZE, guarded_depth.end(),
                         [](float value) { return value == DEPTH_GUARD; }));
 }
+
+TEST_CASE("raycast: a wall tile shows exactly one full texture period") {
+    // WALL_TEXTURE_SIZE was two independent literals -- one in textures.cpp
+    // sizing the generated art, one in raycast.cpp sampling it -- with nothing
+    // tying them together. Pointing the consumer at 128 while the producer kept
+    // 64 passed 114/114, and so did 32: sample_wall wraps its coordinates, so a
+    // divergence is memory-safe and therefore silent. The constant is now shared,
+    // and these sections are the behavioural witness that both sides really use
+    // it, since a re-added copy inside raycast.cpp's anonymous namespace would
+    // shadow rather than collide.
+    SECTION("the exported size is the texture's own period") {
+        // Producer side, through the public sampler only: no arithmetic from
+        // either module is reproduced here. Sampling one WALL_TEXTURE_SIZE past
+        // any texel must return that texel again, and no smaller shift may, or
+        // the exported number is not the period the renderer may assume.
+        //
+        // Note this is a whole-image shift, not a comparison against row 0. The
+        // first version of this check asked whether row k equals row 0, which is
+        // not a period test at all: several rows of the art legitimately repeat
+        // (mortar bands), and it failed on the correct build at offsets 1, 12 and
+        // 13. Read the expansion, fix the assumption.
+        for (const eh::Tile tile : {eh::Tile::WallBurrow, eh::Tile::WallPantry,
+                                    eh::Tile::WallCellar, eh::Tile::WallBasket}) {
+            for (int x = 0; x < eh::WALL_TEXTURE_SIZE; ++x) {
+                for (int y = 0; y < eh::WALL_TEXTURE_SIZE; ++y) {
+                    REQUIRE(eh::sample_wall(tile, x + eh::WALL_TEXTURE_SIZE, y) ==
+                            eh::sample_wall(tile, x, y));
+                    REQUIRE(eh::sample_wall(tile, x, y + eh::WALL_TEXTURE_SIZE) ==
+                            eh::sample_wall(tile, x, y));
+                }
+            }
+
+            for (int shift = 1; shift < eh::WALL_TEXTURE_SIZE; ++shift) {
+                bool horizontal_period = true;
+                bool vertical_period = true;
+                for (int x = 0; x < eh::WALL_TEXTURE_SIZE && (horizontal_period || vertical_period);
+                     ++x) {
+                    for (int y = 0;
+                         y < eh::WALL_TEXTURE_SIZE && (horizontal_period || vertical_period); ++y) {
+                        if (eh::sample_wall(tile, x + shift, y) != eh::sample_wall(tile, x, y)) {
+                            horizontal_period = false;
+                        }
+                        if (eh::sample_wall(tile, x, y + shift) != eh::sample_wall(tile, x, y)) {
+                            vertical_period = false;
+                        }
+                    }
+                }
+                CAPTURE(shift);
+                CHECK_FALSE(horizontal_period);
+                CHECK_FALSE(vertical_period);
+            }
+        }
+    }
+
+    SECTION("a rendered wall face is one period tall, not a tiling of itself") {
+        eh::GameState game;
+        eh::reset(game, 0x5eed1234u);
+        eh::init_textures();
+
+        constexpr int ROOM = 7;
+        eh::Map &map = game.level.map;
+        map.width = ROOM;
+        map.height = ROOM;
+        map.tiles.assign(static_cast<std::size_t>(ROOM) * static_cast<std::size_t>(ROOM),
+                         eh::Tile::Floor);
+        const auto index = [](int x, int y) { return static_cast<std::size_t>(y * ROOM + x); };
+        for (int i = 0; i < ROOM; ++i) {
+            map.tiles[index(i, 0)] = eh::Tile::WallPantry;
+            map.tiles[index(i, ROOM - 1)] = eh::Tile::WallPantry;
+            map.tiles[index(0, i)] = eh::Tile::WallPantry;
+            map.tiles[index(ROOM - 1, i)] = eh::Tile::WallPantry;
+        }
+        game.player.x = eh::fx_from_float(3.5f);
+        game.player.y = eh::fx_from_float(3.5f);
+        game.player.angle = eh::angle_from_deg(0.0);
+
+        TestFramebuffer target;
+
+        // A map with no wall tiles at all: every ray misses, so this frame is the
+        // untouched background gradient. Differing from it is what identifies wall
+        // pixels, rather than assuming where the renderer puts them.
+        eh::GameState empty = game;
+        empty.level.map.tiles.assign(
+            static_cast<std::size_t>(ROOM) * static_cast<std::size_t>(ROOM), eh::Tile::Floor);
+        eh::render_walls(empty, target.framebuffer);
+        const std::vector<uint32_t> background = target.pixels;
+
+        eh::render_walls(game, target.framebuffer);
+        const std::vector<uint32_t> wall = target.pixels;
+
+        int top = -1;
+        int bottom = -1;
+        for (int y = 0; y < eh::Framebuffer::H; ++y) {
+            const std::size_t at = static_cast<std::size_t>(y) * eh::Framebuffer::W + 320;
+            if (wall[at] != background[at]) {
+                if (top < 0) {
+                    top = y;
+                }
+                bottom = y;
+            }
+        }
+
+        // Non-vacuity: the face has to be a real wall, tall enough that halving or
+        // doubling the sampling rate is resolvable at all, and flat so every column
+        // shades identically.
+        REQUIRE(top >= 0);
+        REQUIRE(bottom - top + 1 > 2 * eh::WALL_TEXTURE_SIZE);
+        for (int column = 0; column < eh::Framebuffer::W; ++column) {
+            REQUIRE(std::abs(target.depth[static_cast<std::size_t>(column)] - 2.5f) < 0.001f);
+        }
+
+        // Each column steps through the texture once from the top of the wall to
+        // the bottom, so its upper half and lower half are different art. If the
+        // consumer's size is a multiple of the producer's period the two halves
+        // become the same texels: measured 1325 of 46080 matching rows on the
+        // shared constant against 43918 of 46080 with the consumer at 128.
+        const int half = (bottom - top + 1) / 2;
+        int matching = 0;
+        for (int column = 0; column < eh::Framebuffer::W; ++column) {
+            for (int i = 0; i < half; ++i) {
+                const std::size_t upper =
+                    static_cast<std::size_t>(top + i) * eh::Framebuffer::W + column;
+                const std::size_t lower =
+                    static_cast<std::size_t>(top + half + i) * eh::Framebuffer::W + column;
+                if (wall[upper] == wall[lower]) {
+                    ++matching;
+                }
+            }
+        }
+        const int compared = half * eh::Framebuffer::W;
+        CAPTURE(matching, compared);
+        CHECK(matching * 4 < compared);
+    }
+}

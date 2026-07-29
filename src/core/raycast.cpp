@@ -16,7 +16,6 @@ constexpr float PI = 3.14159265358979323846f;
 constexpr float TWO_PI = 2.0f * PI;
 constexpr float MIN_DEPTH = 0.0001f;
 constexpr float FAR_DEPTH = 1.0e6f;
-constexpr int TEXTURE_SIZE = 64;
 
 struct RayHit {
     int map_x = 0;
@@ -145,15 +144,15 @@ void render_walls(const GameState &gs, Framebuffer &fb) {
         float wall_position = hit.side == 0 ? position_y + perpendicular_distance * ray_direction_y
                                             : position_x + perpendicular_distance * ray_direction_x;
         wall_position -= std::floor(wall_position);
-        int texture_x =
-            std::clamp(static_cast<int>(wall_position * TEXTURE_SIZE), 0, TEXTURE_SIZE - 1);
+        int texture_x = std::clamp(static_cast<int>(wall_position * WALL_TEXTURE_SIZE), 0,
+                                   WALL_TEXTURE_SIZE - 1);
         if ((hit.side == 0 && ray_direction_x > 0.0f) ||
             (hit.side == 1 && ray_direction_y < 0.0f)) {
-            texture_x = TEXTURE_SIZE - texture_x - 1;
+            texture_x = WALL_TEXTURE_SIZE - texture_x - 1;
         }
 
         const float texture_step =
-            static_cast<float>(TEXTURE_SIZE) / static_cast<float>(wall_height);
+            static_cast<float>(WALL_TEXTURE_SIZE) / static_cast<float>(wall_height);
         float texture_position = static_cast<float>(draw_start - wall_top) * texture_step;
         float brightness = distance_brightness(perpendicular_distance);
         if (hit.side == 1) {
@@ -163,7 +162,7 @@ void render_walls(const GameState &gs, Framebuffer &fb) {
         const Tile tile = gs.level.map.at(hit.map_x, hit.map_y);
         for (int y = draw_start; y < draw_end; ++y) {
             const int texture_y =
-                std::clamp(static_cast<int>(texture_position), 0, TEXTURE_SIZE - 1);
+                std::clamp(static_cast<int>(texture_position), 0, WALL_TEXTURE_SIZE - 1);
             texture_position += texture_step;
             fb.pixels[y * Framebuffer::W + column] =
                 shade(sample_wall(tile, texture_x, texture_y), brightness);
