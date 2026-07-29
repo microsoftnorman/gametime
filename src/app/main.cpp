@@ -94,6 +94,14 @@ struct SoundBank {
                 continue;
             }
             Wave wave{};
+            // `frameCount` is a count of frames, not samples; the two are equal only because the
+            // format contract is mono. Nothing else constrains AUDIO_CHANNELS -- no test
+            // references it, and setting it to 2 builds clean and passes the whole suite while
+            // every sound plays at twice its true length. This is the one place that assumption
+            // is made, so this is where it is stated.
+            static_assert(eh::AUDIO_CHANNELS == 1,
+                          "frameCount counts samples below, which equals frames only for mono; "
+                          "interleaved audio must divide by the channel count here");
             wave.frameCount = static_cast<unsigned int>(pcm.samples.size());
             wave.sampleRate = eh::AUDIO_SAMPLE_RATE;
             wave.sampleSize = eh::AUDIO_BITS_PER_SAMPLE;
