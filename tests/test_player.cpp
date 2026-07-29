@@ -425,3 +425,79 @@ TEST_CASE("player: turn rates match the tuning table in mvp.md") {
         CHECK(game.player.angle == start);
     }
 }
+
+// `move_axis` does two separable jobs.
+//
+//  1. It chunks a displacement into pieces no larger than COLLISION_STEP, so a fast move cannot
+//     skip over a wall. That is covered: disabling the clamp fails the tunnelling test above.
+//  2. It then binary-searches the first blocked piece for the largest safe sub-step, so the
+//     player ends flush against the wall face instead of up to one movement step short.
+//
+// Job 2 had no coverage on either axis. Deleting the entire search left the suite at 109/109.
+//
+// The tunnelling test looks like it pins the stop position, because it asserts an exact value.
+// It does not, and the reason is its fixture: it starts at x = 6.5 while COLLISION_STEP is
+// exactly PLAYER_RADIUS = 0.25 tiles, so 6.5 + n * 0.25 reaches the flush 7.75 on its own and
+// the sub-step search never has to contribute anything. An exact-value assertion can still be
+// satisfied without the code it appears to pin, when the fixture's coordinates happen to be
+// commensurate with the step size.
+//
+// Measured with the search deleted, walking -- the only forward magnitude the app produces:
+//     east   7.72412 instead of 7.75000
+//     south  6.71289 instead of 6.75000
+//     north  1.28418 instead of 1.25000
+// and one large displacement from a start that is not a multiple of COLLISION_STEP stops
+// 0.20020 tiles short. So every approach below starts on a deliberately fractional coordinate,
+// and all four faces are asserted because the two axes and two signs are independent paths.
+TEST_CASE("player: walking into a wall settles flush against every face") {
+    constexpr eh::fx OFF_GRID = eh::FX_ONE * 37 / 100;
+    constexpr eh::fx MID_TILE = eh::FX_ONE / 2;
+
+    struct Approach {
+        const char *face;
+        eh::fx start_x;
+        eh::fx start_y;
+        double heading_deg;
+        bool along_x;
+        eh::fx flush;
+    };
+
+    const Approach approaches[] = {
+        {"east", eh::fx_from_int(4) + OFF_GRID, eh::fx_from_int(4) + MID_TILE, 0.0, true,
+         eh::fx_from_int(8) - PLAYER_RADIUS},
+        {"west", eh::fx_from_int(4) + OFF_GRID, eh::fx_from_int(4) + MID_TILE, 180.0, true,
+         eh::fx_from_int(1) + PLAYER_RADIUS},
+        {"south", eh::fx_from_int(6) + MID_TILE, eh::fx_from_int(4) + OFF_GRID, 90.0, false,
+         eh::fx_from_int(7) - PLAYER_RADIUS},
+        {"north", eh::fx_from_int(6) + MID_TILE, eh::fx_from_int(4) + OFF_GRID, 270.0, false,
+         eh::fx_from_int(1) + PLAYER_RADIUS},
+    };
+
+    for (const Approach &approach : approaches) {
+        INFO("approach: " << approach.face);
+
+        eh::GameState game;
+        eh::reset(game, 71);
+        game.player.x = approach.start_x;
+        game.player.y = approach.start_y;
+        game.player.angle = eh::angle_from_deg(approach.heading_deg);
+
+        const eh::fx start = approach.along_x ? game.player.x : game.player.y;
+        REQUIRE(start != approach.flush);
+
+        eh::InputFrame input;
+        input.move_y = 1;
+        for (int tick = 0; tick < 200; ++tick) {
+            eh::player_tick(game, input);
+        }
+
+        const eh::fx settled = approach.along_x ? game.player.x : game.player.y;
+        const eh::fx travelled = settled > start ? settled - start : start - settled;
+
+        // Non-vacuity: the walk must cover real ground, so a player frozen at a coincidentally
+        // flush spawn cannot satisfy the assertion below.
+        REQUIRE(travelled > eh::fx_from_int(2));
+        CHECK(settled == approach.flush);
+        CHECK_FALSE(overlaps_wall(game));
+    }
+}
