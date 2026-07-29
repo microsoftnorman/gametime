@@ -727,3 +727,104 @@ TEST_CASE("sprites: the muzzle flash erupts past the end of the barrel") {
     REQUIRE(firing_reach < idle_reach);
     REQUIRE(idle_reach - firing_reach > 25);
 }
+
+TEST_CASE("sprites: the flash's translucent glow dims as the shot ages") {
+    // The test above named for fading ("peaks when fired and fades over its
+    // lifetime") never compares stale.lit to fresh.lit -- the stale shot feeds
+    // only the recoil bounds, which measure where the weapon sits, not how
+    // bright it burns. And is_flash_pixel selects red>245, green>195: that is
+    // the star-ray colour, drawn opaque and identical at every tick. So every
+    // flash assertion in the suite observes the one component that cannot fade.
+    //
+    // Replacing the whole strength ramp with a constant (flash_strength = 1.0f,
+    // so the glow never dims) passed all 115 tests while recoil kept the bounds
+    // checks green.
+    //
+    // The glow is the only thing the weapon draws that is not fully opaque, so
+    // a pixel belongs to it exactly when its value depends on what was
+    // underneath. Rendering one state over two backgrounds isolates it without
+    // naming a coordinate: opaque art lands identically and cancels. Source-over
+    // then gives the strength directly -- two backgrounds differing by D in a
+    // channel leave a difference of D*(1-alpha), so with D = 255 the surviving
+    // red-channel gap is 255 - alpha. That is compositing algebra, not the
+    // weapon's geometry, and it assumes nothing about the ramp under test.
+    constexpr uint32_t OVER_LIGHT = 0xffffffffu;
+    constexpr uint32_t OVER_DARK = 0xff000000u;
+
+    auto render_over = [](uint32_t background, uint16_t muzzle_flash) {
+        GuardedFramebuffer buffer;
+        std::fill_n(buffer.framebuffer.pixels, GuardedFramebuffer::PIXEL_COUNT, background);
+
+        eh::GameState gs = state_facing_east();
+        gs.player.bob = 0;
+        gs.muzzle_flash = muzzle_flash;
+        eh::render_weapon(gs, buffer.framebuffer);
+
+        REQUIRE(buffer.guards_intact());
+        return buffer.pixels();
+    };
+
+    struct Glow {
+        std::size_t translucent = 0;
+        int peak_strength = -1;
+    };
+
+    auto glow_of = [&](uint16_t muzzle_flash) {
+        const std::vector<uint32_t> light = render_over(OVER_LIGHT, muzzle_flash);
+        const std::vector<uint32_t> dark = render_over(OVER_DARK, muzzle_flash);
+
+        Glow glow;
+        for (std::size_t i = 0; i < GuardedFramebuffer::PIXEL_COUNT; ++i) {
+            // A pixel the weapon never touched still holds the two different
+            // backgrounds, so "differs between renders" is not by itself
+            // evidence of translucency. Only pixels the weapon wrote count.
+            if (light[i] == OVER_LIGHT && dark[i] == OVER_DARK) {
+                continue;
+            }
+            if (light[i] == dark[i]) {
+                continue;
+            }
+            ++glow.translucent;
+            const int light_red = static_cast<int>(light[i] & 0xffu);
+            const int dark_red = static_cast<int>(dark[i] & 0xffu);
+            glow.peak_strength = std::max(glow.peak_strength, 255 - (light_red - dark_red));
+        }
+        return glow;
+    };
+
+    // Control. Everything else the weapon draws is opaque, so an unfired weapon
+    // must render identically over both backgrounds. Without this, a stray
+    // translucent element elsewhere on the gun could carry the assertions below
+    // while the flash itself was gone.
+    const Glow idle = glow_of(0);
+    CAPTURE(idle.translucent, idle.peak_strength);
+    REQUIRE(idle.translucent == 0);
+
+    // The glow must weaken on every tick of the countdown. Strict monotonicity
+    // is the contract "it fades"; the exact ramp stays free to be retuned.
+    std::vector<int> strengths;
+    for (uint16_t ticks = 1; ticks <= eh::MUZZLE_FLASH_TICKS; ++ticks) {
+        const Glow glow = glow_of(ticks);
+        INFO("muzzle_flash := " << ticks << " translucent := " << glow.translucent);
+        CHECK(glow.translucent > 0);
+        CHECK(glow.peak_strength > 0);
+        strengths.push_back(glow.peak_strength);
+    }
+
+    // Measured on a correct build: 40, 45, 50, 55. Holding the strength constant
+    // pins all four at 55.
+    for (std::size_t i = 1; i < strengths.size(); ++i) {
+        INFO("strength at " << i << " ticks := " << strengths[i - 1] << ", at " << (i + 1)
+                            << " ticks := " << strengths[i]);
+        CHECK(strengths[i] > strengths[i - 1]);
+    }
+
+    // player.cpp only ever sets this timer to MUZZLE_FLASH_TICKS and decrements
+    // it, so the renderer's clamp is defensive rather than reachable today. It
+    // is still worth pinning: it is what keeps a future change to how the timer
+    // is armed from producing a glow brighter than a fresh shot.
+    const Glow fresh = glow_of(eh::MUZZLE_FLASH_TICKS);
+    const Glow overlong = glow_of(static_cast<uint16_t>(eh::MUZZLE_FLASH_TICKS * 2));
+    CAPTURE(fresh.peak_strength, overlong.peak_strength);
+    CHECK(overlong.peak_strength == fresh.peak_strength);
+}
