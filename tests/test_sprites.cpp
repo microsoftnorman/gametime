@@ -888,3 +888,139 @@ TEST_CASE("sprites: each entity type keeps its own silhouette") {
         CHECK(carrot_over_jellybean == Catch::Approx(1.964).margin(0.15));
     }
 }
+
+// The basket is the second half of the objective: mvp.md line 13 is "crack all five eggs, then
+// reach the Basket to win". `render_sprites` gates a golden halo and a size throb on
+// `gs.eggs_remaining == 0`, animated by `gs.tick` -- which makes them the game's only cue that the
+// goal has changed from hunting to going home. Both were unpinned:
+//
+//   basket never activates even with every egg dead   -> 124/124 passed
+//   pulse frozen (lit, but no throb and no animation) -> 124/124 passed
+//
+// The sprite suite asserts occlusion, ordering, bounds, inverse-distance size and per-type
+// silhouette. Every one of those holds on a basket that never lights up, because they are all
+// properties of a single static render.
+//
+// Measured on the shipped build, basket alone 3 tiles dead ahead, sweeping ticks 0..39 (one pulse
+// period is ~35 ticks): with an egg still loose, all 39 later frames are bit-identical to tick 0
+// and the halo is absent. With every egg cracked, all 39 differ, drawn height swings 134..157 and
+// the halo's peak alpha swings 18..51. The assertions below use margins well inside those.
+//
+// The halo is separated from the opaque wickerwork by rendering over two backgrounds and keeping
+// only pixels the sprite wrote whose value depends on what was underneath (finding #45). No sprite
+// geometry or pulse arithmetic is reproduced, so retuning the period or the halo colour leaves this
+// green while switching either channel off does not.
+TEST_CASE("sprites: the basket stays inert until the last egg cracks, then pulses") {
+    const auto render_basket = [](uint16_t eggs_remaining, uint32_t tick, uint32_t background) {
+        std::vector<uint32_t> pixels(
+            static_cast<std::size_t>(eh::Framebuffer::W) * eh::Framebuffer::H, background);
+        std::array<float, eh::Framebuffer::W> depth{};
+        depth.fill(1000.0f);
+        eh::Framebuffer framebuffer{pixels.data(), depth.data()};
+
+        eh::GameState state = state_facing_east();
+        state.eggs_remaining = eggs_remaining;
+        state.tick = tick;
+        state.entities.push_back(entity_at(1, eh::EntityType::Basket, 3.0f, 0.0f));
+        eh::render_sprites(state, framebuffer);
+        return pixels;
+    };
+
+    const auto drawn_height = [](const std::vector<uint32_t> &pixels, uint32_t background) {
+        int top = eh::Framebuffer::H;
+        int bottom = -1;
+        for (int y = 0; y < eh::Framebuffer::H; ++y) {
+            for (int x = 0; x < eh::Framebuffer::W; ++x) {
+                if (pixels[static_cast<std::size_t>(y) * eh::Framebuffer::W +
+                           static_cast<std::size_t>(x)] != background) {
+                    top = std::min(top, y);
+                    bottom = std::max(bottom, y);
+                    break;
+                }
+            }
+        }
+        return bottom >= top ? bottom - top + 1 : 0;
+    };
+
+    // Two backgrounds 255 apart in red only. A pixel the sprite wrote that still differs between
+    // the two renders was blended rather than painted. Over the black render such a pixel's red
+    // channel is src_red * alpha / 255 with no contribution from the background, so the strongest
+    // survivor is the halo's alpha and nothing else.
+    //
+    // Counting translucent pixels instead would NOT work: measured, that count tracks the quad's
+    // projected area, so freezing `basket_scale` alone drives it to zero swing while the alpha is
+    // still animating. It reads like a brightness metric and is really a second size metric.
+    const auto halo_peak = [&](uint16_t eggs_remaining, uint32_t tick) {
+        const uint32_t dark = 0xff000000u;
+        const uint32_t lit = 0xff0000ffu;
+        const std::vector<uint32_t> over_dark = render_basket(eggs_remaining, tick, dark);
+        const std::vector<uint32_t> over_lit = render_basket(eggs_remaining, tick, lit);
+        int peak = 0;
+        for (std::size_t i = 0; i < over_dark.size(); ++i) {
+            if (over_dark[i] == dark || over_lit[i] == lit) {
+                continue; // never written; still holds two different backgrounds
+            }
+            if ((over_dark[i] & 0xffu) == (over_lit[i] & 0xffu)) {
+                continue; // fully opaque art
+            }
+            peak = std::max(peak, static_cast<int>(over_dark[i] & 0xffu));
+        }
+        return peak;
+    };
+
+    const int SWEEP_TICKS = 40;
+
+    SECTION("while an egg is still loose the basket does not move at all") {
+        const std::vector<uint32_t> inert = render_basket(1, 0, BACKGROUND);
+        // Non-vacuity: a basket that was never drawn would satisfy "every frame is identical".
+        REQUIRE(drawn_height(inert, BACKGROUND) > 100);
+
+        int moved = 0;
+        for (uint32_t tick = 1; tick < static_cast<uint32_t>(SWEEP_TICKS); ++tick) {
+            if (render_basket(1, tick, BACKGROUND) != inert) {
+                ++moved;
+            }
+        }
+        CAPTURE(moved);
+        CHECK(moved == 0);
+    }
+
+    SECTION("cracking the last egg lights the basket's halo") {
+        for (uint32_t tick : {0u, 9u, 17u, 26u, 35u}) {
+            CAPTURE(tick);
+            const std::vector<uint32_t> quiet = render_basket(1, tick, BACKGROUND);
+            const std::vector<uint32_t> live = render_basket(0, tick, BACKGROUND);
+            int differing = 0;
+            for (std::size_t i = 0; i < quiet.size(); ++i) {
+                if (quiet[i] != live[i]) {
+                    ++differing;
+                }
+            }
+            const int quiet_halo = halo_peak(1, tick);
+            const int live_halo = halo_peak(0, tick);
+            CAPTURE(differing, quiet_halo, live_halo);
+            CHECK(differing > 5000);
+            CHECK(live_halo - quiet_halo >= 8);
+        }
+    }
+
+    SECTION("the live basket throbs in size and its halo brightens and dims") {
+        int shortest = eh::Framebuffer::H;
+        int tallest = 0;
+        int dimmest = std::numeric_limits<int>::max();
+        int brightest = 0;
+        for (uint32_t tick = 0; tick < static_cast<uint32_t>(SWEEP_TICKS); ++tick) {
+            const int height = drawn_height(render_basket(0, tick, BACKGROUND), BACKGROUND);
+            const int halo = halo_peak(0, tick);
+            shortest = std::min(shortest, height);
+            tallest = std::max(tallest, height);
+            dimmest = std::min(dimmest, halo);
+            brightest = std::max(brightest, halo);
+        }
+        CAPTURE(shortest, tallest, dimmest, brightest);
+        // Two independent channels: `basket_scale` sizes the quad, `basket_pulse` sets the halo's
+        // alpha. Verified by mutation that freezing either one alone fails exactly one of these.
+        CHECK(tallest - shortest >= 10);
+        CHECK(brightest - dimmest >= 12);
+    }
+}
