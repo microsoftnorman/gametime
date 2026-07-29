@@ -498,3 +498,66 @@ TEST_CASE("entities: pickup and basket reach match the radii in mvp.md") {
         REQUIRE(event_count(gs, eh::EventType::Win) == 0);
     }
 }
+
+// mvp.md line 166 accepts greedy chase with wall sliding and no pathfinding,
+// arguing it is "indistinguishable from smart behaviour" on this grid. The
+// existing corner test asserts only that a chasing egg never overlaps a wall --
+// which a *stationary* egg also satisfies. Measured in that fixture: the egg
+// travels 0.12 tiles in its 240 ticks, so the safety assertion was passing on an
+// egg that had effectively stopped, and nothing in the suite required a chasing
+// egg to ever arrive.
+//
+// The x=4 and x=18 corridors are the only links between the map's halves, so
+// "can an egg get through a one-tile gap" is the contract that decides whether
+// eggs are a threat at all. Measured on main: from (2.5, 5.5) the egg rounds the
+// corner and reaches attack range at tick 666. Nominal straight-line time is
+// ~2.3 s, so cornering costs roughly 4.8x -- the axis-separated slide only ever
+// applies the free axis's *component* of the speed, and that component shrinks
+// as the egg aligns with the player. Slow, but it does arrive; an earlier
+// 600-tick probe of mine reported "blocked" purely because the budget was 66
+// ticks too short.
+//
+// The bound below is that measurement plus headroom, not a guess. Deleting
+// either sliding axis leaves the egg pinned at the corridor mouth forever.
+TEST_CASE("entities: a chasing egg rounds a corner into a one-tile corridor") {
+    eh::GameState gs = fresh_game();
+    eh::Entity &egg = entity_of_type(gs, eh::EntityType::Egg);
+    disable_other_eggs(gs, egg.id);
+    egg.x = eh::fx_from_float(2.5f);
+    egg.y = eh::fx_from_float(5.5f);
+    gs.player.x = eh::fx_from_float(4.5f);
+    gs.player.y = eh::fx_from_float(10.5f);
+
+    // The two are in different halves of the map, so arrival is only possible
+    // through the corridor -- a straight line between them crosses solid wall.
+    REQUIRE(gs.level.map.is_wall(2, 7));
+    REQUIRE(gs.level.map.is_wall(3, 7));
+    REQUIRE_FALSE(gs.level.map.is_wall(4, 7));
+
+    constexpr int BUDGET = 900;
+    auto distance_tiles = [&] {
+        const double dx = static_cast<double>(egg.x) - static_cast<double>(gs.player.x);
+        const double dy = static_cast<double>(egg.y) - static_cast<double>(gs.player.y);
+        return std::sqrt(dx * dx + dy * dy) / static_cast<double>(eh::FX_ONE);
+    };
+    REQUIRE(distance_tiles() > 5.0);
+
+    int arrived = -1;
+    for (int tick = 0; tick < BUDGET; ++tick) {
+        // Hold the egg awake so this measures movement alone; the sight range
+        // and lost-sight grace period are pinned by their own tests.
+        egg.ai = eh::AiState::Chase;
+        gs.events.clear();
+        eh::entities_tick(gs);
+        REQUIRE_FALSE(overlaps_wall(gs, egg));
+        if (arrived < 0 && distance_tiles() <= 0.75) {
+            arrived = tick;
+        }
+    }
+
+    INFO("egg finished at " << static_cast<double>(egg.x) / eh::FX_ONE << ", "
+                            << static_cast<double>(egg.y) / eh::FX_ONE);
+    REQUIRE(arrived >= 0);
+    // It must also not be trivially close already: the corridor really was crossed.
+    REQUIRE(arrived > 60);
+}
