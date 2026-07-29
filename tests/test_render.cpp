@@ -136,6 +136,69 @@ int wall_top_row(const Target &frame, const Target &reference) {
     return -1;
 }
 
+// Every wall fixture in the suite keeps the player at least a tile from the wall, so the
+// near field -- the case where you walk right up to something -- was never rendered. The
+// raycaster clamps near depth and ceilings the projected height for exactly this case, and
+// measured against the shipped suite none of that code was pinned by anything:
+//
+//   near clamp raised to a full tile (walls never closer)   passed 136/136
+//   near clamp raised to half a tile                        passed 136/136
+//   projected height ceiling cut to one screen height       passed 136/136
+//
+// The first means you could press against a wall and it would simply stop growing.
+//
+// Note the near-field code cannot be probed by substituting MIN_DEPTH's own value: it is
+// 0.0001f, so a "clamp removed" mutant that writes 0.0001f is a no-op that passes for the
+// wrong reason. The mutants above change behaviour; that one did not.
+eh::GameState near_corridor(float player_x) {
+    constexpr int ROWS = 5;
+    constexpr int COLUMNS = 12;
+    constexpr int WALL_COLUMN = 4;
+
+    eh::GameState game;
+    eh::reset(game, 0x5eed1234u);
+    game.screen = eh::Screen::Playing;
+    game.entities.clear();
+
+    eh::Map &map = game.level.map;
+    map.width = COLUMNS;
+    map.height = ROWS;
+    map.tiles.assign(static_cast<std::size_t>(COLUMNS) * ROWS, eh::Tile::Floor);
+    for (int x = 0; x < COLUMNS; ++x) {
+        map.tiles[static_cast<std::size_t>(x)] = eh::Tile::WallPantry;
+        map.tiles[static_cast<std::size_t>((ROWS - 1) * COLUMNS + x)] = eh::Tile::WallPantry;
+    }
+    for (int y = 0; y < ROWS; ++y) {
+        map.tiles[static_cast<std::size_t>(y * COLUMNS)] = eh::Tile::WallPantry;
+        map.tiles[static_cast<std::size_t>(y * COLUMNS + WALL_COLUMN)] = eh::Tile::WallPantry;
+    }
+
+    game.player.x = eh::fx_from_float(player_x);
+    game.player.y = eh::fx_from_float(2.5f);
+    game.player.angle = eh::angle_from_deg(0.0);
+    return game;
+}
+
+// Longest run of identical pixels down one column. A texel row magnified by proximity
+// covers more screen rows, so this grows as the player closes on the wall.
+int longest_constant_run(const Target &frame, int column) {
+    int longest = 1;
+    int run = 1;
+    for (int y = 1; y < eh::Framebuffer::H; ++y) {
+        const auto above =
+            static_cast<std::size_t>(y - 1) * eh::Framebuffer::W + static_cast<std::size_t>(column);
+        const auto here =
+            static_cast<std::size_t>(y) * eh::Framebuffer::W + static_cast<std::size_t>(column);
+        if (frame.pixels[above] == frame.pixels[here]) {
+            ++run;
+        } else {
+            longest = std::max(longest, run);
+            run = 1;
+        }
+    }
+    return std::max(longest, run);
+}
+
 } // namespace
 
 // The wall camera and the billboard camera each build their own basis from the same player
@@ -841,4 +904,43 @@ TEST_CASE("render: a wall one tile away fills the screen and shrinks in proporti
         INFO("depth " << DEPTHS[i] << " top " << tops[i] << " (H/2 - top) * depth " << product);
         CHECK(std::abs(product - HORIZON) <= DEPTHS[i] + 2.0);
     }
+}
+
+TEST_CASE("render: walking up to a wall magnifies it right through the near field") {
+    constexpr int CENTER = eh::Framebuffer::W / 2;
+    // Player x against a wall whose face is at x = 4, so depth = 4 - x.
+    constexpr std::array<float, 5> PLAYER_X{1.0f, 2.0f, 3.0f, 3.5f, 3.75f};
+    constexpr std::array<double, 5> DEPTHS{3.0, 2.0, 1.0, 0.5, 0.25};
+
+    std::array<int, 5> runs{};
+    for (std::size_t i = 0; i < PLAYER_X.size(); ++i) {
+        Target frame;
+        eh::render_walls(near_corridor(PLAYER_X[i]), frame.framebuffer);
+        runs[i] = longest_constant_run(frame, CENTER);
+        INFO("depth " << DEPTHS[i] << " longest run " << runs[i]);
+        REQUIRE(runs[i] > 0);
+    }
+
+    // Non-vacuity: the far sample must show fine vertical detail, so nothing below can be
+    // satisfied by a frame that is one flat colour top to bottom. Measured 25 at depth 3.
+    REQUIRE(runs[0] < eh::Framebuffer::H / 4);
+
+    // The contract. Closing on a wall magnifies its texture, so each step nearer must
+    // enlarge the largest constant band. Measured 25, 36, 74, 147, 180.
+    //
+    // This is what the near-depth clamp and the projected-height ceiling are for, and it is
+    // the assertion that notices when either stops the wall growing: clamping at one tile
+    // freezes the last three samples at 74, clamping at half a tile freezes the last two at
+    // 147, and ceilinging the projected height at one screen freezes them all.
+    for (std::size_t i = 1; i < runs.size(); ++i) {
+        INFO("depth " << DEPTHS[i - 1] << " -> " << DEPTHS[i] << " run " << runs[i - 1] << " -> "
+                      << runs[i]);
+        CHECK(runs[i] > runs[i - 1]);
+    }
+
+    // An absolute anchor as well as the relative law, because a monotone sequence alone
+    // cannot say how far the magnification actually goes. A quarter tile from the wall a
+    // single texel row must span more than a third of the screen. Measured 180 of 360.
+    INFO("closest sample run " << runs[4]);
+    CHECK(runs[4] > eh::Framebuffer::H / 3);
 }
