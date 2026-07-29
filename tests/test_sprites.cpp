@@ -1024,3 +1024,58 @@ TEST_CASE("sprites: the basket stays inert until the last egg cracks, then pulse
         CHECK(brightest - dimmest >= 12);
     }
 }
+
+// Finding #57. `render_sprites` skips any entity whose `alive` flag is clear (sprites.cpp:470).
+// That one line is the game's primary visual kill feedback -- finding #31 explicitly rests on it,
+// arguing that a fatal hit's retained flash is invisible "because render_sprites culls !alive and
+// the egg blinks out the frame it dies". Absence *is* the death animation, and absence is also how
+// a collected carrot leaves the floor.
+//
+// Disabling the cull leaves every cracked egg standing as a corpse forever and every collected
+// pickup lying where it was taken. It was caught -- by exactly one test, for the wrong reason:
+// `render: the animation clock advances with simulation time and reaches the screen` died at
+// `REQUIRE(basket_pixels > 5000)` reading 0, because five corpses stood between that fixture's
+// camera and the basket. That is a non-vacuity guard in a test about the clock, and finding #24's
+// caution applies: a mutant dying is not evidence the contract is covered. Repositioning that
+// unrelated fixture would silence this regression completely.
+//
+// The two sections are separated by entity type on purpose, so a cull narrowed to one kind of
+// entity fails only its own section rather than both firing off one cause.
+TEST_CASE("sprites: a cracked egg and a collected pickup leave the screen entirely") {
+    // Control: with nothing alive to draw, the renderer must leave the frame untouched. Without
+    // it, "the dead entity drew nothing" is satisfied by a renderer that draws nothing at all.
+    GuardedFramebuffer empty;
+    eh::GameState bare = state_facing_east();
+    eh::render_sprites(bare, empty.framebuffer);
+    REQUIRE(empty.pixels_unchanged());
+
+    eh::GameState gs = state_facing_east();
+    eh::EntityType type = eh::EntityType::Egg;
+
+    SECTION("a cracked egg") { type = eh::EntityType::Egg; }
+    SECTION("a collected carrot") { type = eh::EntityType::Carrot; }
+
+    gs.entities.push_back(entity_at(1, type, 3.0f, 0.0f));
+
+    GuardedFramebuffer live;
+    eh::render_sprites(gs, live.framebuffer);
+    const std::vector<uint32_t> live_pixels = live.pixels();
+    int drawn = 0;
+    for (uint32_t pixel : live_pixels) {
+        if (pixel != BACKGROUND) {
+            ++drawn;
+        }
+    }
+
+    // Non-vacuity: the entity must genuinely be on screen while alive, or its disappearance is
+    // not evidence of anything.
+    CAPTURE(drawn);
+    REQUIRE(drawn > 500);
+
+    gs.entities[0].alive = false;
+
+    GuardedFramebuffer dead;
+    eh::render_sprites(gs, dead.framebuffer);
+    CHECK(dead.pixels_unchanged());
+    CHECK(dead.guards_intact());
+}
