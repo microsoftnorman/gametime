@@ -734,3 +734,66 @@ TEST_CASE("replay: map tiles and pending events participate in the digest") {
         REQUIRE(diff_states(expected, actual) == "event[0].entity_id: 3 != 4");
     }
 }
+
+// The dispatch loop in src/app/main.cpp iterates gs.events every tick and plays
+// one sound per event type, so "the list holds this tick's events" is a contract
+// between tick() and the audio layer -- and no test stated it. Commenting out the
+// clear at the top of tick() leaves 115 of 116 green; the only failure is this
+// file's combat golden (total_egg_health, 266 against an expected 232), which is
+// an incidental consequence rather than a report of the defect and is re-derived
+// whenever gameplay is deliberately tuned. The audible result of that mutation is
+// that every sound the game has ever emitted replays on every subsequent tick,
+// forever.
+TEST_CASE("state: a tick reports only the events it produced") {
+    eh::GameState state;
+    eh::reset(state, 0x5eed1234u);
+
+    auto reports = [&state](eh::EventType type) {
+        return std::any_of(state.events.begin(), state.events.end(),
+                           [type](const eh::GameEvent &event) { return event.type == type; });
+    };
+
+    // Non-vacuity. If the opening tick produced nothing, the assertion below
+    // would be satisfied by a list that was empty all along.
+    eh::tick(state, input(0, 0, 0, 0, eh::InputFrame::Fire));
+    CAPTURE(state.events.size());
+    REQUIRE(reports(eh::EventType::Shot));
+
+    // The eggs spawn far from the player, so the tick after that shot has nothing
+    // of its own to report. Measured: exactly one event on the firing tick and
+    // zero on the next. An accumulating list can never reach zero again.
+    eh::tick(state, eh::InputFrame{});
+    CAPTURE(state.events.size());
+    CHECK_FALSE(reports(eh::EventType::Shot));
+    CHECK(state.events.empty());
+
+    // The same property over a long run, so a clear that survives one tick but
+    // drifts under sustained combat is still caught. Measured on a correct build:
+    // the list peaks at 2 events and is empty on 575 of the 600 ticks. Without the
+    // clear it grows without bound and is never empty after the first shot.
+    //
+    // The scope of these two bounds is narrower than it looks, and was measured
+    // rather than assumed. They catch wholesale accumulation. They do not catch a
+    // slow conditional leak: guarding the clear with `if (events.size() <= 1)`,
+    // which only leaks on the rare tick that reports two events, moves these to
+    // high_water 3 and 418 empty ticks and passes. The assertion above -- an idle
+    // tick reports nothing at all -- is the decisive one; these only widen it in
+    // time. They are deliberately loose so they do not freeze how many events a
+    // busy tick may legitimately report.
+    eh::GameState run;
+    eh::reset(run, 0x5eed1234u);
+    std::size_t high_water = 0;
+    std::size_t empty_ticks = 0;
+    for (int t = 0; t < 600; ++t) {
+        const std::uint8_t buttons =
+            (t % 20 == 0) ? static_cast<std::uint8_t>(eh::InputFrame::Fire) : 0;
+        eh::tick(run, input(0, 1, 1, 0, buttons));
+        high_water = std::max(high_water, run.events.size());
+        if (run.events.empty()) {
+            ++empty_ticks;
+        }
+    }
+    CAPTURE(high_water, empty_ticks);
+    CHECK(high_water <= 16);
+    CHECK(empty_ticks > 300);
+}
