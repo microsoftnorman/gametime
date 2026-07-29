@@ -675,3 +675,50 @@ TEST_CASE("hud: screen shake jitters the readouts within a bounded amplitude") {
         }
     }
 }
+// mvp.md line 13 is "crack all five eggs, then reach the Basket to win", and the HUD's
+// objective prompt is the game's only explicit statement of that second half -- a banner
+// reading GET TO THE BASKET! plus an OBJECTIVE readout, both gated on eggs_remaining == 0.
+// Deleting the call entirely passed 125/125. No HUD fixture in the suite had ever set
+// eggs_remaining to 0, so every pixel of the prompt was drawn by code no test reached, and
+// a player who had just cleared the level would be told nothing at all.
+//
+// screen_says discovers the ink colour from the render rather than being told it, so the
+// first two sections hold in either phase of the prompt's blink. That keeps them
+// independent of the third, which is the only one that owns the blink.
+TEST_CASE("hud: the objective prompt appears only once the last egg is cracked") {
+    constexpr std::string_view OBJECTIVE_PROMPT = "GET TO THE BASKET!";
+
+    SECTION("while an egg is still loose the HUD does not send the player home") {
+        eh::GameState hunting = playing_state();
+        hunting.eggs_remaining = 1;
+        CHECK_FALSE(screen_says(render_pixels(hunting), OBJECTIVE_PROMPT));
+    }
+
+    SECTION("cracking the last egg puts the objective on screen") {
+        eh::GameState cleared = playing_state();
+        cleared.eggs_remaining = 0;
+        // The positive check is what keeps the negative one above honest: a matcher that
+        // could not find anything would satisfy the CHECK_FALSE for the wrong reason.
+        CHECK(screen_says(render_pixels(cleared), OBJECTIVE_PROMPT));
+    }
+
+    SECTION("the prompt blinks, so it reads as an instruction and not as furniture") {
+        // warning_flash toggles every 8 ticks. At full health it has no other consumer --
+        // the health colours only consult it below 25 -- and shake is always zero, so its
+        // tick-driven jitter contributes nothing. Two renders differing only in gs.tick
+        // therefore isolate the prompt's own colour.
+        eh::GameState lit = playing_state();
+        lit.eggs_remaining = 0;
+        lit.tick = 0;
+        eh::GameState alternate = lit;
+        alternate.tick = 8;
+
+        const std::vector<uint32_t> first = render_pixels(lit);
+        const std::vector<uint32_t> second = render_pixels(alternate);
+        CHECK(first != second);
+        // Both phases must still say it: a "blink" that spends half its cycle invisible
+        // would satisfy the inequality above while making the instruction unreadable.
+        CHECK(screen_says(first, OBJECTIVE_PROMPT));
+        CHECK(screen_says(second, OBJECTIVE_PROMPT));
+    }
+}
