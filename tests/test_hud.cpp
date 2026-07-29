@@ -292,6 +292,102 @@ TEST_CASE("hud: firing lights up the crosshair") {
     REQUIRE(((lit >> 8) & 0xffu) > 150u);
 }
 
+namespace {
+
+// The readouts below live at fixed spots in hud.cpp, and this test has to know them in order
+// to predict which glyph pixels a value should produce. That coupling is deliberate and
+// visible: the alternative - asserting only that "the number region changed" - is exactly the
+// granularity that let a readout frozen at a constant pass the whole suite.
+struct Readout {
+    int x;
+    int y;
+    int scale;
+};
+
+constexpr Readout HEALTH_NUMBER{16, 328, 2};
+constexpr Readout AMMO_NUMBER{226, 328, 2};
+constexpr Readout EGG_COUNTER{332, 323, 2};
+
+// Pixels that change when `before` is drawn instead of `after` at the same spot. Colours are
+// irrelevant here - only which pixels the glyph strokes cover - so the probe colour need not
+// match the one the HUD actually uses.
+std::vector<std::size_t> glyph_difference(const Readout &at, std::string_view before,
+                                          std::string_view after) {
+    const uint32_t probe = eh::rgba(255, 255, 255);
+    GuardedFramebuffer first;
+    GuardedFramebuffer second;
+    eh::hud_detail::draw_text(first.framebuffer, at.x, at.y, before, at.scale, probe);
+    eh::hud_detail::draw_text(second.framebuffer, at.x, at.y, after, at.scale, probe);
+
+    const std::vector<uint32_t> a = first.image();
+    const std::vector<uint32_t> b = second.image();
+    std::vector<std::size_t> changed;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (a[i] != b[i]) {
+            changed.push_back(i);
+        }
+    }
+    return changed;
+}
+
+// Every pixel the two spellings disagree on must also disagree in the real HUD. Anything less
+// than that - a count, a bounding box, "some pixel differs" - is satisfied by a readout that
+// merely reacts to the value rather than reporting it.
+void require_readout_reports(const eh::GameState &before, const eh::GameState &after,
+                             const Readout &at, std::string_view before_text,
+                             std::string_view after_text) {
+    const std::vector<std::size_t> predicted = glyph_difference(at, before_text, after_text);
+    INFO("comparing \"" << before_text << "\" against \"" << after_text << "\"");
+    REQUIRE(predicted.size() > 8);
+
+    const std::vector<uint32_t> rendered_before = render_pixels(before);
+    const std::vector<uint32_t> rendered_after = render_pixels(after);
+    std::size_t stuck = 0;
+    for (const std::size_t index : predicted) {
+        if (rendered_before[index] == rendered_after[index]) {
+            ++stuck;
+        }
+    }
+    REQUIRE(stuck == 0);
+}
+
+} // namespace
+
+// Freezing the health number at 100, the ammo at 60 and the egg counter at 5 - so the HUD
+// reported constants while the game ran underneath it - passed 97/97. The bar was pinned in
+// proportion, but the number printed beside it was not, and neither were the other two.
+TEST_CASE("hud: the readouts report the values, not merely react to them") {
+    SECTION("health, across a digit-count change") {
+        eh::GameState full = playing_state();
+        eh::GameState hurt = playing_state();
+        hurt.player.health = 42;
+        require_readout_reports(full, hurt, HEALTH_NUMBER, "100", "42");
+    }
+
+    SECTION("health, one digit apart") {
+        // 42 against 43 shares its first digit, so only a per-digit readout can pass.
+        eh::GameState lower = playing_state();
+        lower.player.health = 42;
+        eh::GameState higher = playing_state();
+        higher.player.health = 43;
+        require_readout_reports(lower, higher, HEALTH_NUMBER, "42", "43");
+    }
+
+    SECTION("ammo") {
+        eh::GameState many = playing_state();
+        eh::GameState few = playing_state();
+        few.player.ammo = 7;
+        require_readout_reports(many, few, AMMO_NUMBER, "24", "7");
+    }
+
+    SECTION("eggs remaining") {
+        eh::GameState three = playing_state();
+        eh::GameState one = playing_state();
+        one.eggs_remaining = 1;
+        require_readout_reports(three, one, EGG_COUNTER, "EGGS: 3/5", "EGGS: 1/5");
+    }
+}
+
 TEST_CASE("hud: unsupported font characters use a safe fallback glyph") {
     GuardedFramebuffer target;
     const std::string unsupported(1, static_cast<char>(0xff));
