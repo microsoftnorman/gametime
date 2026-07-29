@@ -828,3 +828,63 @@ TEST_CASE("sprites: the flash's translucent glow dims as the shot ages") {
     CAPTURE(fresh.peak_strength, overlong.peak_strength);
     CHECK(overlong.peak_strength == fresh.peak_strength);
 }
+
+// dimensions_for() in sprites.cpp is a second switch over EntityType, independent of the one that
+// picks the artwork, and nothing ties them: exchanging any two of its four entries passed 121/121.
+// An egg would be drawn at the basket's proportions, a pickup at another pickup's, and no test
+// would notice. Sizes compared only against each other cannot see an exchange, because the set of
+// sizes is unchanged and only their owners move - so these assertions say which silhouette belongs
+// to which entity, rather than that the four differ.
+TEST_CASE("sprites: each entity type keeps its own silhouette") {
+    struct Rendered {
+        int width;
+        int height;
+    };
+
+    const auto measure = [](eh::EntityType type) {
+        GuardedFramebuffer buffer;
+        eh::GameState state = state_facing_east();
+        state.entities.push_back(entity_at(1, type, 3.0f, 0.0f));
+        eh::render_sprites(state, buffer.framebuffer);
+
+        const PixelBounds bounds = modified_bounds(buffer);
+        REQUIRE(buffer.guards_intact());
+        REQUIRE(bounds.valid());
+        return Rendered{bounds.right - bounds.left + 1, bounds.bottom - bounds.top + 1};
+    };
+
+    const Rendered egg = measure(eh::EntityType::Egg);
+    const Rendered jellybean = measure(eh::EntityType::Jellybean);
+    const Rendered carrot = measure(eh::EntityType::Carrot);
+    const Rendered basket = measure(eh::EntityType::Basket);
+    CAPTURE(egg.width, egg.height, jellybean.width, jellybean.height, carrot.width, carrot.height,
+            basket.width, basket.height);
+
+    SECTION("the basket is the only sprite wider than it is tall") {
+        CHECK(basket.width > basket.height);
+        CHECK(egg.height > egg.width);
+        CHECK(carrot.height > carrot.width);
+        CHECK(jellybean.height > jellybean.width);
+    }
+
+    SECTION("seen from one distance the four keep their relative heights") {
+        // Measured 155 / 132 / 108 / 55 pixels at three tiles ahead. Ordering alone is too coarse
+        // to state this: exchanging the jellybean's and the carrot's entries leaves them 81 and 75
+        // pixels tall, still in order, the margin collapsed from 53 pixels to 6. The magnitude is
+        // the contract - a carrot reads as roughly twice a jellybean, and the exchange makes that
+        // 1.08x. Ratios rather than pixel counts, so a deliberate change to the sprite projection
+        // scale (which test_render.cpp bounds) leaves this green, while one entity's own
+        // proportions moving does not.
+        //
+        // Width cannot carry any of it: the jellybean and the carrot both draw 46 pixels wide,
+        // because the bounding box measures the artwork rather than the quad it is sampled into.
+        const double egg_over_basket = static_cast<double>(egg.height) / basket.height;
+        const double basket_over_carrot = static_cast<double>(basket.height) / carrot.height;
+        const double carrot_over_jellybean = static_cast<double>(carrot.height) / jellybean.height;
+        CAPTURE(egg_over_basket, basket_over_carrot, carrot_over_jellybean);
+
+        CHECK(egg_over_basket == Catch::Approx(1.174).margin(0.15));
+        CHECK(basket_over_carrot == Catch::Approx(1.222).margin(0.15));
+        CHECK(carrot_over_jellybean == Catch::Approx(1.964).margin(0.15));
+    }
+}
