@@ -414,3 +414,87 @@ TEST_CASE("entities: chase speed matches the tuning table in mvp.md") {
 
     CHECK(tiles_per_second == Catch::Approx(1.8).epsilon(0.015));
 }
+
+// --- Coordinator-added post-ship ------------------------------------------
+// mvp.md line 173 gives both pickups a 0.4-tile radius and line 179 gives the
+// Basket 0.5 tiles. Every existing test for either placed the target *exactly*
+// on the player, so distance was always zero and neither radius was pinned at
+// all. Measured: shrinking PICKUP_RANGE to 0.01 tiles -- pickups you can walk
+// straight through -- passed 107/107, and BASKET_RANGE passed 107/107 at both
+// 0.01 and 6.0 tiles. At 6.0 the game is won the instant the last egg dies,
+// which deletes the second half of the objective; the test written to pin that
+// two-stage win survived because its separability guard only asks for >2 tiles
+// apart while the real spawn-to-basket distance is 18.03.
+//
+// Both radii are pinned from both sides. The control is that only the target
+// moves between the two halves of each section: same entity, same map, same
+// walls, so "not collected" cannot be explained by anything but distance.
+//
+// The pickup sections deactivate every other pickup first. Without that, an
+// over-wide radius sweeps up the neighbouring jellybeans too and fails the
+// *inside* section as well -- a true failure but for the wrong reason, which
+// per finding #24 is indistinguishable from coverage until you read the
+// expansion. Isolated, each of the four mutants kills exactly one section.
+TEST_CASE("entities: pickup and basket reach match the radii in mvp.md") {
+    auto isolate_pickup = [](eh::GameState &gs, uint32_t keep_id) {
+        for (eh::Entity &entity : gs.entities) {
+            if (entity.id != keep_id && (entity.type == eh::EntityType::Jellybean ||
+                                         entity.type == eh::EntityType::Carrot)) {
+                entity.alive = false;
+            }
+        }
+    };
+
+    SECTION("a jellybean is collected just inside 0.4 tiles") {
+        eh::GameState gs = fresh_game();
+        eh::Entity &jellybean = entity_of_type(gs, eh::EntityType::Jellybean);
+        isolate_pickup(gs, jellybean.id);
+        jellybean.x = gs.player.x + eh::fx_from_float(0.35f);
+        jellybean.y = gs.player.y;
+        gs.player.ammo = 24;
+
+        eh::entities_tick(gs);
+
+        REQUIRE(gs.player.ammo == 34);
+        REQUIRE_FALSE(jellybean.alive);
+    }
+
+    SECTION("the same jellybean is out of reach just outside 0.4 tiles") {
+        eh::GameState gs = fresh_game();
+        eh::Entity &jellybean = entity_of_type(gs, eh::EntityType::Jellybean);
+        isolate_pickup(gs, jellybean.id);
+        jellybean.x = gs.player.x + eh::fx_from_float(0.45f);
+        jellybean.y = gs.player.y;
+        gs.player.ammo = 24;
+
+        eh::entities_tick(gs);
+
+        REQUIRE(gs.player.ammo == 24);
+        REQUIRE(jellybean.alive);
+        REQUIRE(event_count(gs, eh::EventType::Pickup) == 0);
+    }
+
+    SECTION("the basket is reached just inside 0.5 tiles") {
+        eh::GameState gs = fresh_game();
+        eh::Entity &basket = entity_of_type(gs, eh::EntityType::Basket);
+        gs.player.x = basket.x + eh::fx_from_float(0.45f);
+        gs.player.y = basket.y;
+        gs.eggs_remaining = 0;
+
+        eh::entities_tick(gs);
+
+        REQUIRE(event_count(gs, eh::EventType::Win) == 1);
+    }
+
+    SECTION("the basket is out of reach just outside 0.5 tiles") {
+        eh::GameState gs = fresh_game();
+        eh::Entity &basket = entity_of_type(gs, eh::EntityType::Basket);
+        gs.player.x = basket.x + eh::fx_from_float(0.55f);
+        gs.player.y = basket.y;
+        gs.eggs_remaining = 0;
+
+        eh::entities_tick(gs);
+
+        REQUIRE(event_count(gs, eh::EventType::Win) == 0);
+    }
+}
