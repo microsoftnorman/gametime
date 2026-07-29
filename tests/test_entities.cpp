@@ -561,3 +561,50 @@ TEST_CASE("entities: a chasing egg rounds a corner into a one-tile corridor") {
     // It must also not be trivially close already: the corridor really was crossed.
     REQUIRE(arrived > 60);
 }
+
+// `has_line_of_sight` walks the grid and, when the ray crosses an x and a y line at the same
+// distance, refuses to pass if either orthogonal neighbour of that corner is solid -- an egg may
+// not see between two tiles meeting at a point. Disabling that check left the suite at 111/111.
+//
+// Reachability was measured, not assumed. Sweeping every ordered pair of open tiles at two
+// sub-tile offsets -- 123,008 pairs -- the guard changes the outcome for 116 of them. That is two
+// orders of magnitude more reachable than the same hole in the weapon raycast, because a
+// 45-degree diagonal between two tile centres lands exactly on a corner every time, and it is
+// the shape of unfairness a player notices: being spotted through a wall.
+//
+// The weapon raycast tests a third tile at its corner (the diagonal destination) where this one
+// tests two. That is not a divergence: the destination is rejected by the `is_wall(cell_x,
+// cell_y)` check at the top of the following iteration.
+TEST_CASE("entities: a sightline cannot squeeze through the corner between two walls") {
+    eh::GameState gs = fresh_game();
+    eh::Entity &egg = entity_of_type(gs, eh::EntityType::Egg);
+    disable_other_eggs(gs, egg.id);
+    egg.ai = eh::AiState::Idle;
+
+    // Both diagonals below span one tile on each axis, well inside sight range, so the only
+    // difference between the sections is whether the corner they cross is solid.
+    REQUIRE(gs.level.map.is_wall(8, 2));
+    REQUIRE_FALSE(gs.level.map.is_wall(7, 3));
+    REQUIRE_FALSE(gs.level.map.is_wall(6, 2));
+    REQUIRE_FALSE(gs.level.map.is_wall(5, 3));
+
+    SECTION("the wall corner blocks it") {
+        place(egg, 7, 2);
+        gs.player.x = tile_center(8);
+        gs.player.y = tile_center(3);
+
+        eh::entities_tick(gs);
+
+        CHECK(egg.ai == eh::AiState::Idle);
+    }
+
+    SECTION("an equally distant open diagonal is seen") {
+        place(egg, 5, 2);
+        gs.player.x = tile_center(6);
+        gs.player.y = tile_center(3);
+
+        eh::entities_tick(gs);
+
+        CHECK(egg.ai == eh::AiState::Chase);
+    }
+}
