@@ -237,3 +237,68 @@ TEST_CASE("state: losing the last of your health ends the game and announces it"
     // event. Measured: disabling either one alone still loses the game, so this asserts the
     // outcome rather than one branch. Disabling both is what it catches.
 }
+
+// `wall_tile_for` assigns one of four wall textures by map quadrant -- the last of the enum-to-art
+// mappings in this codebase, after the HUD screens, the wall swatches and the sprite dimensions.
+// Exchanging two quadrants is caught, but only by the 600-tick replay determinism golden, which
+// reports a changed digest and names nothing: the burrow could be panelled like the cellar and the
+// only signal would be "the world differs from the recorded one".
+//
+// The oracle here is level geography rather than the mapping itself, so this is not the mapping
+// restated. Measured on the shipped level: the map is 24x18, the player spawns at (3.5, 3.5) and
+// the basket stands at (18.5, 13.5) -- opposite corners. The burrow is where the bunny starts and
+// the basket-themed walls are where the basket actually is, which is a claim about the game rather
+// than about the switch.
+//
+// Stated limitation, because a known gap beats a test that pretends to close it: nothing in this
+// level distinguishes the pantry from the cellar. Eggs and pickups are spread evenly across both
+// (NE 2 eggs / 1 jellybean / 1 carrot, SW 1 / 1 / 1), so exchanging *those two* quadrants is the
+// one pairwise exchange this test cannot see. It remains covered only by the replay digest. Giving
+// either room a themed prop -- a pantry shelf, a cellar barrel -- would anchor it here too.
+TEST_CASE("map: the burrow is where the bunny starts and the basket walls are where it ends") {
+    eh::GameState game;
+    eh::reset(game, 0x5eed1234u);
+    const eh::Map &map = game.level.map;
+
+    // The corner of the map nearest a point, by plain distance -- no quadrant arithmetic.
+    const auto nearest_corner = [&map](eh::fx x, eh::fx y) {
+        const float fx_x = eh::fx_to_float(x);
+        const float fx_y = eh::fx_to_float(y);
+        const int corner_x = fx_x < static_cast<float>(map.width - 1) - fx_x ? 0 : map.width - 1;
+        const int corner_y = fx_y < static_cast<float>(map.height - 1) - fx_y ? 0 : map.height - 1;
+        return map.at(corner_x, corner_y);
+    };
+
+    SECTION("each landmark is walled in the texture named after it") {
+        CHECK(nearest_corner(game.player.x, game.player.y) == eh::Tile::WallBurrow);
+        CHECK(nearest_corner(game.level.basket.x, game.level.basket.y) == eh::Tile::WallBasket);
+    }
+
+    SECTION("the two landmarks are in different corners, so the check above is not trivial") {
+        const int player_corner_x =
+            eh::fx_to_float(game.player.x) * 2.0f < static_cast<float>(map.width) ? 0 : 1;
+        const int basket_corner_x =
+            eh::fx_to_float(game.level.basket.x) * 2.0f < static_cast<float>(map.width) ? 0 : 1;
+        CHECK(player_corner_x != basket_corner_x);
+        CHECK(nearest_corner(game.player.x, game.player.y) !=
+              nearest_corner(game.level.basket.x, game.level.basket.y));
+    }
+
+    SECTION("all four corners are walls, and all four are different") {
+        const eh::Tile north_west = map.at(0, 0);
+        const eh::Tile north_east = map.at(map.width - 1, 0);
+        const eh::Tile south_west = map.at(0, map.height - 1);
+        const eh::Tile south_east = map.at(map.width - 1, map.height - 1);
+        for (eh::Tile corner : {north_west, north_east, south_west, south_east}) {
+            CHECK(corner != eh::Tile::Floor);
+        }
+        // Collapse -- two quadrants sharing one texture -- is the failure this can see. An
+        // exchange is not; that is what the section above is for.
+        CHECK(north_west != north_east);
+        CHECK(north_west != south_west);
+        CHECK(north_west != south_east);
+        CHECK(north_east != south_west);
+        CHECK(north_east != south_east);
+        CHECK(south_west != south_east);
+    }
+}
