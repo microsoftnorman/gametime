@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 // render_frame is the only renderer the game actually calls, and until this
@@ -275,4 +276,156 @@ TEST_CASE("render: idle input leaves the camera exactly where it was") {
     // advanced on its own, or input read with the wrong sign, would move this.
     REQUIRE(after.depth[eh::Framebuffer::W / 2] == depth_before);
     REQUIRE(eh::fx_to_float(game.player.x) == Catch::Approx(3.5f));
+}
+
+// `render: walls and sprites sweep together when the camera turns` proves the two renderers agree
+// about *yaw*. It reads columns and never looks at a row, so it says nothing about the other half
+// of the shared camera: where the floor is, and how fast things shrink toward it.
+//
+// Nothing made them agree there. `raycast.cpp` sizes a wall as `Framebuffer::H / distance` -- a
+// vertical scale of 360 -- around `HORIZON = Framebuffer::H / 2`. `sprites.cpp` independently
+// computes `projection = (W * 0.5) / tan(FOV/2)` = 492.8 and places feet at
+// `horizon + CAMERA_HEIGHT * projection / depth` around its own `H * 0.5f`. Two modules, two
+// sessions, one undeclared decision -- the vertical twin of the bug the yaw sweep was written for.
+// Measured: raising the sprite horizon to 0.35H, floating every egg 54 pixels off the ground,
+// passed 113/113; halving CAMERA_HEIGHT, sinking them into it, also passed 113/113.
+//
+// The oracle avoids reproducing either basis. A wall of unit height standing on the floor has its
+// bottom edge *at* the floor, so the wall renderer's own output supplies the floor row at a given
+// depth: render with a near wall, render again with it pushed back, and the lowest row that
+// changed is the base of the near wall. The egg's feet are read the same way, by diffing its
+// silhouette against the same reference. Both are read from pixels; neither is computed.
+//
+// Three depths establish that each renderer's rows really do follow `horizon + k / depth`, which
+// is what makes the two derived quantities meaningful:
+//
+//   walls   251 / 207 / 190 rows at 2.5 / 6.5 / 16.5 tiles  ->  horizon 179.1, scale 179.7
+//   sprites 269 / 214 / 193 rows at the same depths         ->  horizon 179.4, scale 223.9
+//
+// The horizons agree to within a third of a pixel: that half of the camera really is shared, and
+// this test now says so. The scales do not, and cannot both be right -- an egg's feet sink below
+// the floor it stands on by 44/depth pixels, 18 of them at 2.5 tiles. The ratio should be 1.0 and
+// measures 1.25.
+//
+// That is left as a measured, bounded fact rather than quietly retuned here. Which renderer is
+// wrong is an art decision -- the wall formula fixes a vertical FOV that its own horizontal FOV
+// does not, so "fixing" sprites to match would change how tall every egg looks -- and it needs a
+// human looking at the screen, exactly as the footfall cadence did. Bounding the ratio keeps the
+// divergence from growing silently while that decision is open, and forces any fix to come here
+// and state itself.
+TEST_CASE("render: walls and sprites share one horizon but disagree on vertical scale") {
+    constexpr int ROWS = 5; // a 3-tile-tall corridor: borders at y = 0 and y = 4
+    constexpr int COLUMNS = 34;
+    constexpr float PLAYER_X = 1.5f;
+    constexpr float PLAYER_Y = 2.5f;
+    constexpr int CENTER = eh::Framebuffer::W / 2;
+    constexpr int REFERENCE_WALL = 30; // 28.5 tiles: farther than anything measured
+
+    // Wall columns chosen so each face lands a whole number of tiles from the player.
+    constexpr std::array<int, 3> WALL_COLUMNS{4, 8, 18};
+    constexpr std::array<float, 3> DEPTHS{2.5f, 6.5f, 16.5f};
+
+    auto corridor = [&](int wall_column) {
+        eh::GameState game;
+        eh::reset(game, 0x5eed1234u);
+        game.screen = eh::Screen::Playing;
+        game.entities.clear();
+
+        eh::Map &map = game.level.map;
+        map.width = COLUMNS;
+        map.height = ROWS;
+        map.tiles.assign(static_cast<std::size_t>(COLUMNS) * ROWS, eh::Tile::Floor);
+        const auto index = [](int x, int y) { return static_cast<std::size_t>(y * COLUMNS + x); };
+        for (int x = 0; x < COLUMNS; ++x) {
+            map.tiles[index(x, 0)] = eh::Tile::WallPantry;
+            map.tiles[index(x, ROWS - 1)] = eh::Tile::WallPantry;
+        }
+        for (int y = 0; y < ROWS; ++y) {
+            map.tiles[index(0, y)] = eh::Tile::WallPantry;
+            map.tiles[index(wall_column, y)] = eh::Tile::WallPantry;
+        }
+
+        game.player.x = eh::fx_from_float(PLAYER_X);
+        game.player.y = eh::fx_from_float(PLAYER_Y);
+        game.player.angle = eh::angle_from_deg(0.0); // straight down the corridor
+        return game;
+    };
+
+    Target reference;
+    eh::render_walls(corridor(REFERENCE_WALL), reference.framebuffer);
+
+    // Lowest row of the centre column this frame changed relative to the reference. For a nearer
+    // wall that is the base of the wall; for an added egg it is the sole of its foot.
+    auto lowest_changed_row = [&](const Target &frame) {
+        for (int y = eh::Framebuffer::H - 1; y >= 0; --y) {
+            const auto offset = static_cast<std::size_t>(y) * eh::Framebuffer::W + CENTER;
+            if (frame.pixels[offset] != reference.pixels[offset]) {
+                return y;
+            }
+        }
+        return -1;
+    };
+
+    std::array<double, 3> floor_rows{};
+    std::array<double, 3> feet_rows{};
+    for (std::size_t i = 0; i < DEPTHS.size(); ++i) {
+        Target walls;
+        eh::render_walls(corridor(WALL_COLUMNS[i]), walls.framebuffer);
+        floor_rows[i] = lowest_changed_row(walls);
+
+        eh::GameState game = corridor(REFERENCE_WALL);
+        eh::Entity egg;
+        egg.id = 9001;
+        egg.type = eh::EntityType::Egg;
+        egg.x = eh::fx_from_float(PLAYER_X + DEPTHS[i]);
+        egg.y = eh::fx_from_float(PLAYER_Y);
+        egg.alive = true;
+        game.entities.push_back(egg);
+
+        Target both;
+        eh::render_walls(game, both.framebuffer);
+        eh::render_sprites(game, both.framebuffer);
+        feet_rows[i] = lowest_changed_row(both);
+
+        INFO("depth " << DEPTHS[i] << " floor " << floor_rows[i] << " feet " << feet_rows[i]);
+        REQUIRE(floor_rows[i] > 0);
+        REQUIRE(feet_rows[i] > 0);
+    }
+
+    // Non-vacuity: both quantities must really climb toward the horizon with distance, so nothing
+    // below can be satisfied by rows that never moved.
+    REQUIRE(floor_rows[0] - floor_rows[2] > 20);
+    REQUIRE(feet_rows[0] - feet_rows[2] > 20);
+
+    // row = horizon + scale / depth, solved from the nearest and farthest samples.
+    auto fit = [&](const std::array<double, 3> &rows) {
+        const double inverse_near = 1.0 / DEPTHS[0];
+        const double inverse_far = 1.0 / DEPTHS[2];
+        const double scale = (rows[0] - rows[2]) / (inverse_near - inverse_far);
+        return std::pair<double, double>{rows[0] - scale * inverse_near, scale};
+    };
+    const auto [wall_horizon, wall_scale] = fit(floor_rows);
+    const auto [sprite_horizon, sprite_scale] = fit(feet_rows);
+
+    // The middle depth was not used to fit either line, so it independently confirms that both
+    // renderers really are inverse-linear in depth and these two numbers mean something.
+    const double wall_predicted = wall_horizon + wall_scale / DEPTHS[1];
+    const double sprite_predicted = sprite_horizon + sprite_scale / DEPTHS[1];
+    INFO("middle samples " << floor_rows[1] << "/" << feet_rows[1] << " predicted "
+                           << wall_predicted << "/" << sprite_predicted);
+    CHECK(std::abs(floor_rows[1] - wall_predicted) <= 2.0);
+    CHECK(std::abs(feet_rows[1] - sprite_predicted) <= 2.0);
+
+    INFO("wall horizon " << wall_horizon << " scale " << wall_scale << " | sprite horizon "
+                         << sprite_horizon << " scale " << sprite_scale);
+
+    // The horizon is genuinely shared. Moving either renderer's horizon breaks this.
+    CHECK(std::abs(wall_horizon - sprite_horizon) <= 2.0);
+
+    // The vertical scale is not shared. This bound records the divergence as it stands so it
+    // cannot grow unnoticed; it is not an endorsement. A correct engine would assert 1.0 here.
+    const double divergence = sprite_scale / wall_scale;
+    INFO("vertical scale divergence " << divergence << " (should be 1.0)");
+    CHECK(divergence > 1.15);
+    CHECK(divergence < 1.35);
 }
