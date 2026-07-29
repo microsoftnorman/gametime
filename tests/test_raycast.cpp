@@ -11,7 +11,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
+#include <numeric>
 #include <vector>
 
 namespace {
@@ -270,6 +272,78 @@ TEST_CASE("raycast: walls facing along Y are shaded darker than walls facing alo
     const double ratio = y_face / x_face;
     REQUIRE(ratio > 0.6);
     REQUIRE(ratio < 0.8);
+}
+
+TEST_CASE("raycast: opposite wall faces preserve texture handedness") {
+    eh::GameState game;
+    eh::reset(game, 0x1234567u);
+    eh::init_textures();
+
+    constexpr int ROOM_SIZE = 7;
+    game.level.map.width = ROOM_SIZE;
+    game.level.map.height = ROOM_SIZE;
+    game.level.map.tiles.assign(ROOM_SIZE * ROOM_SIZE, eh::Tile::Floor);
+    for (int cell = 0; cell < ROOM_SIZE; ++cell) {
+        game.level.map.tiles[static_cast<std::size_t>(cell)] = eh::Tile::WallBurrow;
+        game.level.map.tiles[static_cast<std::size_t>((ROOM_SIZE - 1) * ROOM_SIZE + cell)] =
+            eh::Tile::WallBurrow;
+        game.level.map.tiles[static_cast<std::size_t>(cell * ROOM_SIZE)] =
+            eh::Tile::WallBurrow;
+        game.level.map.tiles[static_cast<std::size_t>(cell * ROOM_SIZE + ROOM_SIZE - 1)] =
+            eh::Tile::WallBurrow;
+    }
+    game.player.x = eh::fx_from_int(3) + eh::FX_ONE / 2;
+    game.player.y = eh::fx_from_int(3) + eh::FX_ONE / 2;
+
+    TestFramebuffer target;
+    auto render_scanline = [&](double degrees) {
+        game.player.angle = eh::angle_from_deg(degrees);
+        eh::render_walls(game, target.framebuffer);
+
+        std::array<uint32_t, eh::Framebuffer::W> scanline{};
+        float max_depth_error = 0.0f;
+        for (int column = 0; column < eh::Framebuffer::W; ++column) {
+            max_depth_error =
+                std::max(max_depth_error,
+                         std::abs(target.depth[static_cast<std::size_t>(column)] - 2.5f));
+            // Opposite cardinal rays can quantize to 143- versus 144-pixel wall
+            // columns. One row above centre samples the same texture Y in both.
+            scanline[static_cast<std::size_t>(column)] =
+                target.pixels[static_cast<std::size_t>(eh::Framebuffer::H / 2 - 1) *
+                                  eh::Framebuffer::W +
+                              static_cast<std::size_t>(column)];
+        }
+        CAPTURE(degrees, max_depth_error);
+        REQUIRE(max_depth_error < 0.001f);
+        return scanline;
+    };
+
+    const auto east = render_scanline(0.0);
+    const auto west = render_scanline(180.0);
+    const auto south = render_scanline(90.0);
+    const auto north = render_scanline(270.0);
+
+    const auto count_matches = [](const auto &lhs, const auto &rhs) {
+        return static_cast<int>(std::inner_product(
+            lhs.begin(), lhs.end(), rhs.begin(), 0, std::plus<>(), std::equal_to<>()));
+    };
+    const auto count_reverse_differences = [](const auto &pixels) {
+        return static_cast<int>(std::inner_product(
+            pixels.begin(), pixels.end(), pixels.rbegin(), 0, std::plus<>(),
+            std::not_equal_to<>()));
+    };
+
+    // First prove the sampled art is asymmetric enough to make orientation observable.
+    REQUIRE(count_reverse_differences(east) > eh::Framebuffer::W / 2);
+    REQUIRE(count_reverse_differences(north) > eh::Framebuffer::W / 2);
+
+    // Opposite faces reverse the world-space wall coordinate. The renderer's face
+    // correction must compensate so the texture retains one screen-space handedness.
+    const int east_west_matches = count_matches(east, west);
+    const int north_south_matches = count_matches(north, south);
+    CAPTURE(east_west_matches, north_south_matches);
+    REQUIRE(east_west_matches > eh::Framebuffer::W * 95 / 100);
+    REQUIRE(north_south_matches > eh::Framebuffer::W * 95 / 100);
 }
 
 TEST_CASE("raycast: rendering preserves pixel and depth guards") {
