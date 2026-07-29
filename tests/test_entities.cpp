@@ -718,3 +718,136 @@ TEST_CASE("entities: the tick that kills you is the last thing that happens to y
         CHECK(second_egg.timer == 0);
     }
 }
+
+// Entity::timer is a multiplexed field: in AiState::Attack it is the 48-tick contact
+// cooldown, and in AiState::Chase it is the lost-sight counter that expires after 180
+// ticks. Every handoff between those two meanings must clear it, and none of the three
+// clears was covered. Deleted one at a time (entities.cpp):
+//
+//   231  entering Attack from Chase          129/129 passed
+//   226  leaving Attack for Chase            129/129 passed
+//   237  re-seeing the player while chasing  caught only by the replay digest, unnamed
+//
+// The consequences were measured, not argued. A sweep of every quarter-tile pair inside
+// EGG_ATTACK_RANGE found 96 positions where an egg touches the player with no line of
+// sight -- diagonals across a wall corner -- so an egg really can arrive in contact
+// carrying a large lost-sight count. Without the clear at 231 that count is spent as an
+// attack cooldown and the egg stands on you doing nothing for up to three seconds.
+// Without 226, an egg that has just bitten you carries 48 ticks of cooldown into the
+// chase and forgets you 0.8s early -- but only if you leave its range and its sight on
+// the same tick, because otherwise the clear at 237 fires immediately after and covers
+// for it. Ducking round a corner mid-fight is exactly that case. Without 237, the grace
+// period is cumulative across separate sightings rather than restarting, so ducking
+// behind two pillars is enough to shake a pursuer that saw you clearly in between.
+//
+// The fourth clear, at 211 in the Idle arm, is deliberately not tested: a probe ticking
+// an egg to expiry showed Idle is only ever entered from 244, which has already zeroed
+// the timer, so no reachable state has an idle egg holding a count. Deleting it passes
+// 129/129 and always will.
+TEST_CASE("entities: the contact cooldown and the lost-sight counter never inherit each other") {
+    eh::GameState gs = fresh_game();
+    eh::Entity &egg = entity_of_type(gs, eh::EntityType::Egg);
+    disable_other_eggs(gs, egg.id);
+
+    // A spot the egg can see from tile (7, 2), and one it cannot.
+    const int64_t seen_x = tile_center(5);
+    const int64_t hidden_x = tile_center(12);
+    const int64_t row_y = tile_center(2);
+
+    SECTION("an egg that closed in unseen bites the moment it touches you") {
+        gs.player.x = hidden_x;
+        gs.player.y = row_y;
+        place(egg, 7, 2);
+        egg.ai = eh::AiState::Chase;
+        egg.timer = 0;
+
+        for (int tick = 0; tick < 120; ++tick) {
+            gs.events.clear();
+            eh::entities_tick(gs);
+            REQUIRE(egg.ai == eh::AiState::Chase);
+        }
+        // Fixture guard: the hunt really did bank a large lost-sight count, otherwise
+        // the assertion below is satisfied by an egg that never lost sight at all.
+        REQUIRE(egg.timer > 100);
+
+        // It rounds the corner and lands on the player. In range, still unseen.
+        egg.x = gs.player.x + eh::FX_ONE / 2;
+        egg.y = gs.player.y;
+        const int32_t health_before = gs.player.health;
+        gs.events.clear();
+        eh::entities_tick(gs);
+
+        CHECK(egg.ai == eh::AiState::Attack);
+        CHECK(gs.player.health < health_before);
+        CHECK(event_count(gs, eh::EventType::PlayerHurt) == 1);
+    }
+
+    SECTION("an egg that just bit you still hunts for the full grace period") {
+        gs.player.x = seen_x;
+        gs.player.y = row_y;
+        egg.x = gs.player.x + eh::FX_ONE / 2;
+        egg.y = gs.player.y;
+        egg.ai = eh::AiState::Chase;
+        egg.timer = 0;
+
+        gs.events.clear();
+        eh::entities_tick(gs);
+        REQUIRE(egg.ai == eh::AiState::Attack);
+        // Fixture guard: it really bit, so a cooldown really was banked.
+        REQUIRE(gs.player.health < 100);
+
+        // The player ducks around a corner: out of contact and out of sight on the same
+        // tick, so Attack hands back to Chase with no re-sighting to tidy up after it.
+        // Retreating in plain sight would not do -- the clear at 237 fires on the very
+        // next line and masks a missing clear at 226 entirely.
+        gs.player.x = hidden_x;
+        gs.events.clear();
+        eh::entities_tick(gs);
+        REQUIRE(egg.ai == eh::AiState::Chase);
+
+        // The full grace period starts from the corner, not 48 ticks into it.
+        for (int tick = 0; tick < 179; ++tick) {
+            gs.events.clear();
+            eh::entities_tick(gs);
+            CHECK(egg.ai == eh::AiState::Chase);
+        }
+        gs.events.clear();
+        eh::entities_tick(gs);
+        CHECK(egg.ai == eh::AiState::Idle);
+    }
+
+    SECTION("being seen again restarts the grace period rather than extending it") {
+        gs.player.x = hidden_x;
+        gs.player.y = row_y;
+        place(egg, 7, 2);
+        egg.ai = eh::AiState::Chase;
+        egg.timer = 0;
+
+        // Two long stretches out of sight, each short of the grace period on its own
+        // but well over it combined, separated by one tick of being seen.
+        for (int stretch = 0; stretch < 2; ++stretch) {
+            gs.player.x = hidden_x;
+            for (int tick = 0; tick < 150; ++tick) {
+                gs.events.clear();
+                eh::entities_tick(gs);
+                CHECK(egg.ai == eh::AiState::Chase);
+            }
+            gs.player.x = seen_x;
+            gs.events.clear();
+            eh::entities_tick(gs);
+            CHECK(egg.ai == eh::AiState::Chase);
+        }
+
+        // 300 unseen ticks have now elapsed in total. The egg must still be hunting,
+        // and must still take the full grace period from the most recent sighting.
+        gs.player.x = hidden_x;
+        for (int tick = 0; tick < 180; ++tick) {
+            gs.events.clear();
+            eh::entities_tick(gs);
+            CHECK(egg.ai == eh::AiState::Chase);
+        }
+        gs.events.clear();
+        eh::entities_tick(gs);
+        CHECK(egg.ai == eh::AiState::Idle);
+    }
+}
