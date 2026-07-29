@@ -431,3 +431,105 @@ TEST_CASE("render: walls and sprites share one horizon but disagree on vertical 
     CHECK(divergence > 1.15);
     CHECK(divergence < 1.35);
 }
+
+// The background is the layer every other renderer test reads as its reference and none of them
+// measures. `fill_background` paints the ceiling and floor of the whole world every frame, and no
+// test named it, the ceiling, or the gradient. It also holds a third private copy of the horizon:
+// `raycast.cpp` writes `constexpr int HORIZON = Framebuffer::H / 2` inside fill_background,
+// re-derives `Framebuffer::H / 2` inline when it centres a wall, and `sprites.cpp` writes
+// `Framebuffer::H * 0.5f` a third time. The test above ties the second and third together.
+// Nothing tied the first to anything.
+//
+// Measured, each mutant isolated and build-gated, all against a green 122/122:
+//
+//   the gradient seam moved to H/3, 60 rows off the row walls centre on   passed 122/122
+//   the sky drawn below the horizon and the ground above it               passed 122/122
+//   the ceiling and floor gradients exchanged                             passed 122/122
+//
+// The second renders the world upside down and the suite could not tell.
+//
+// The oracle reproduces no arithmetic. Out-of-bounds map reads return a wall, so an open field is
+// a room whose walls stand as far off as the field is wide: at 400 tiles the enclosing wall is one
+// pixel tall and the gradient shows through on every other row, while at 24 tiles the same wall is
+// thirty pixels tall. Rows that differ between the two are the wall band, and its midpoint is the
+// row the wall renderer centres on -- read out of pixels, not computed. The painted horizon is
+// read the same way, as the row where the column stops being warm and turns cool.
+//
+// Warm and cool rather than exact colours: the ceiling runs brown (R > B) and the floor slate blue
+// (B > R). That is the art direction rather than a palette, so retinting either within its own
+// temperature leaves this green, while exchanging them does not.
+TEST_CASE("render: the sky sits above the ground and meets it where walls are centred") {
+    constexpr int CENTER = eh::Framebuffer::W / 2;
+
+    auto open_field = [](int size) {
+        eh::GameState game;
+        eh::reset(game, 0x5eed1234u);
+        game.screen = eh::Screen::Playing;
+        game.entities.clear();
+
+        eh::Map &map = game.level.map;
+        map.width = size;
+        map.height = size;
+        map.tiles.assign(static_cast<std::size_t>(size) * size, eh::Tile::Floor);
+
+        game.player.x = eh::fx_from_float(static_cast<float>(size) * 0.5f);
+        game.player.y = eh::fx_from_float(static_cast<float>(size) * 0.5f);
+        game.player.angle = eh::angle_from_deg(0.0);
+        return game;
+    };
+    const auto warm = [](uint32_t color) {
+        return static_cast<int>((color >> 16) & 0xffu) > static_cast<int>(color & 0xffu);
+    };
+
+    Target far_field;
+    eh::render_walls(open_field(400), far_field.framebuffer);
+    const auto row = [&](int y) {
+        return far_field.pixels[static_cast<std::size_t>(y) * eh::Framebuffer::W + CENTER];
+    };
+
+    SECTION("the sky is one warm block on top and the ground one cool block beneath it") {
+        CHECK(warm(row(0)));
+        CHECK_FALSE(warm(row(eh::Framebuffer::H - 1)));
+
+        int crossings = 0;
+        for (int y = 1; y < eh::Framebuffer::H; ++y) {
+            if (warm(row(y - 1)) && !warm(row(y))) {
+                ++crossings;
+            }
+        }
+        // Exactly one, so neither half is a band stranded inside the other.
+        CHECK(crossings == 1);
+    }
+
+    SECTION("the painted horizon is the row the walls are centred on") {
+        int painted_horizon = -1;
+        for (int y = 1; y < eh::Framebuffer::H && painted_horizon < 0; ++y) {
+            if (warm(row(y - 1)) && !warm(row(y))) {
+                painted_horizon = y;
+            }
+        }
+        REQUIRE(painted_horizon > 0);
+
+        Target near_field;
+        eh::render_walls(open_field(24), near_field.framebuffer);
+
+        int top = -1, bottom = -1;
+        for (int y = 0; y < eh::Framebuffer::H; ++y) {
+            const std::size_t index = static_cast<std::size_t>(y) * eh::Framebuffer::W + CENTER;
+            if (far_field.pixels[index] != near_field.pixels[index]) {
+                if (top < 0) {
+                    top = y;
+                }
+                bottom = y;
+            }
+        }
+        REQUIRE(top >= 0);
+        // Non-vacuity: the nearer wall has to be a band, not one stray row, or its midpoint would
+        // mean nothing. Measured 165..194 against the far field's single row.
+        REQUIRE(bottom - top > 20);
+
+        const double wall_centre = (top + bottom) / 2.0;
+        CAPTURE(painted_horizon, top, bottom, wall_centre);
+        CHECK(std::abs(painted_horizon - wall_centre) <= 2.0);
+    }
+}
