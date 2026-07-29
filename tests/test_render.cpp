@@ -533,3 +533,95 @@ TEST_CASE("render: the sky sits above the ground and meets it where walls are ce
         CHECK(std::abs(painted_horizon - wall_centre) <= 2.0);
     }
 }
+
+// Freezing the game clock -- deleting ++gs.tick from tick()'s Playing arm -- was caught
+// only by the replay trajectory digest, as an opaque hash mismatch, and it stops every
+// animation the game has: the basket's pulse and the HUD's blinking objective prompt and
+// low-health warning. Measured in a world where nothing else can move, the frame changed
+// on 59 of 60 consecutive ticks normally and on 0 of 60 with the clock frozen.
+//
+// Every consumer test in the suite assigns gs.tick by hand, which is why none of them
+// could see this: they pin what the clock drives, and nothing ran the clock itself. This
+// test owns the producer and the seam, so it deliberately calls the real tick().
+TEST_CASE("render: the animation clock advances with simulation time and reaches the screen") {
+    eh::GameState state;
+    eh::reset(state, 0x5eed1234u);
+    state.screen = eh::Screen::Playing;
+
+    // Crack every egg, so the only things left that can change a frame are driven by the
+    // clock. Dead eggs are culled by the sprite renderer and stop chasing and attacking.
+    for (eh::Entity &entity : state.entities) {
+        if (entity.type == eh::EntityType::Egg) {
+            entity.alive = false;
+            entity.health = 0;
+        }
+    }
+    state.eggs_remaining = 0;
+
+    float basket_x = 0.0f;
+    float basket_y = 0.0f;
+    for (const eh::Entity &entity : state.entities) {
+        if (entity.type == eh::EntityType::Basket) {
+            basket_x = eh::fx_to_float(entity.x);
+            basket_y = eh::fx_to_float(entity.y);
+        }
+    }
+    REQUIRE(basket_x > 0.0f);
+
+    // Stand off the basket looking straight at it, well outside BASKET_RANGE so the run
+    // cannot win and leave Playing -- the clock only advances on the Playing arm.
+    state.player.x = eh::fx_from_float(basket_x - 2.5f);
+    state.player.y = eh::fx_from_float(basket_y);
+    state.player.angle = 0;
+
+    const eh::fx start_x = state.player.x;
+    const eh::fx start_y = state.player.y;
+    const uint16_t start_angle = state.player.angle;
+
+    // Control: the basket has to be on screen, or "the frame changed" would be a claim
+    // about something else entirely.
+    Target lit;
+    eh::render_frame(state, lit.framebuffer);
+    eh::GameState hidden = state;
+    for (eh::Entity &entity : hidden.entities) {
+        if (entity.type == eh::EntityType::Basket) {
+            entity.alive = false;
+        }
+    }
+    Target without;
+    eh::render_frame(hidden, without.framebuffer);
+    int basket_pixels = 0;
+    for (std::size_t i = 0; i < lit.pixels.size(); ++i) {
+        if (lit.pixels[i] != without.pixels[i]) {
+            ++basket_pixels;
+        }
+    }
+    REQUIRE(basket_pixels > 5000);
+
+    const int RUN_TICKS = 60;
+    Target target;
+    std::vector<uint32_t> previous;
+    int changed = 0;
+    for (int i = 0; i < RUN_TICKS; ++i) {
+        eh::tick(state, eh::InputFrame{});
+        eh::render_frame(state, target.framebuffer);
+        if (!previous.empty() && target.pixels != previous) {
+            ++changed;
+        }
+        previous = target.pixels;
+    }
+
+    // The run must not have moved the camera or ended, or the frames could differ for a
+    // reason that has nothing to do with the clock.
+    REQUIRE(state.screen == eh::Screen::Playing);
+    REQUIRE(state.player.x == start_x);
+    REQUIRE(state.player.y == start_y);
+    REQUIRE(state.player.angle == start_angle);
+
+    CAPTURE(state.tick, changed, basket_pixels);
+    // Consumers divide the clock -- the HUD blinks every 8 ticks, the basket's pulse
+    // steps 0.18 radians per tick -- so they are calibrated to one advance per simulation
+    // tick, not merely to a value that rises.
+    CHECK(state.tick == static_cast<uint32_t>(RUN_TICKS));
+    CHECK(changed >= 20);
+}
