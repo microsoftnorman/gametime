@@ -826,8 +826,13 @@ TEST_CASE("sprites: the flash's translucent glow dims as the shot ages") {
     CAPTURE(idle.translucent, idle.peak_strength);
     REQUIRE(idle.translucent == 0);
 
-    // The glow must weaken on every tick of the countdown. Strict monotonicity
-    // is the contract "it fades"; the exact ramp stays free to be retuned.
+    // The glow must weaken on every tick of the countdown. Strict monotonicity is
+    // the contract "it fades" -- but ordering pins a sequence, not a scale, so it
+    // is paired below with two magnitude bounds. Measured against this test as it
+    // originally stood, three separate ways of ruining the ramp still fade and so
+    // still passed it: compressing 0.35f -> 0.10f (37 38 40 41), dimming the glow
+    // alpha 105 -> 60 (23 26 28 31), and lowering the ramp's base while keeping
+    // its slope (21 26 31 35).
     std::vector<int> strengths;
     for (uint16_t ticks = 1; ticks <= eh::MUZZLE_FLASH_TICKS; ++ticks) {
         const Glow glow = glow_of(ticks);
@@ -844,6 +849,22 @@ TEST_CASE("sprites: the flash's translucent glow dims as the shot ages") {
                             << " ticks := " << strengths[i]);
         CHECK(strengths[i] > strengths[i - 1]);
     }
+
+    // Magnitude, because a fade that is merely ordered is not a fade anyone sees.
+    // Both are bounds with measured headroom rather than pinned values, so the
+    // ramp can still be retuned; what they refuse is a ramp retuned into a token.
+    //
+    // A fresh shot has to actually burn. This is what a dimmed glow fails, whether
+    // the alpha is scaled down (31) or the ramp's whole band is lowered (35),
+    // both of which keep fading perfectly and pass every ordering check.
+    INFO("peak strength at a fresh shot := " << strengths.back());
+    CHECK(strengths.back() >= 48); // measured 55
+
+    // ...and it has to travel a real distance while dying. This is what a
+    // compressed ramp fails: flattened toward its own peak it reads 51 52 53 55,
+    // which is still strictly increasing and still starts at full brightness.
+    INFO("travel from stale to fresh := " << (strengths.back() - strengths.front()));
+    CHECK(strengths.back() - strengths.front() > 10); // measured 15
 
     // player.cpp only ever sets this timer to MUZZLE_FLASH_TICKS and decrements
     // it, so the renderer's clamp is defensive rather than reachable today. It
