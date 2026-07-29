@@ -256,36 +256,45 @@ TEST_CASE("raycast: opposite wall faces present the texture in the same orientat
     game.player.x = eh::fx_from_float(4.5f);
     game.player.y = eh::fx_from_float(4.5f);
 
-    // Every border face is exactly 3.5 tiles from the middle, so the wall spans
-    // roughly rows 128..231 and this row sits mid-texture in all four views.
-    constexpr int ROW = 180;
-
-    auto scanline = [&](double degrees) {
+    // Every border face is exactly 3.5 tiles from the middle, so all four views
+    // project the wall to the same height and the comparison can be the whole
+    // frame rather than a chosen row. Measured: 0 of 360 rows differ between
+    // opposite headings. Comparing everything also sidesteps a hazard the
+    // raycaster session hit on a 2.5-tile room, where opposite cardinal angles
+    // quantized the wall to 143 and 144 pixels and only rows off centre matched.
+    auto frame = [&](double degrees) {
         game.player.angle = eh::angle_from_deg(degrees);
         eh::render_walls(game, target.framebuffer);
-        std::vector<uint32_t> row;
         for (int column = 0; column < eh::Framebuffer::W; ++column) {
-            // Guards that the whole strip really is the one flat facing wall.
+            // Guards that the view really is the one flat facing wall, not a corner.
             REQUIRE(std::abs(target.depth[static_cast<std::size_t>(column)] - 3.5f) < 0.001f);
-            row.push_back(target.pixels[static_cast<std::size_t>(ROW) * eh::Framebuffer::W +
-                                        static_cast<std::size_t>(column)]);
         }
-        return row;
+        return target.pixels;
     };
 
-    const std::vector<uint32_t> east = scanline(0.0);
-    const std::vector<uint32_t> west = scanline(180.0);
-    const std::vector<uint32_t> north = scanline(270.0);
-    const std::vector<uint32_t> south = scanline(90.0);
+    const std::vector<uint32_t> east = frame(0.0);
+    const std::vector<uint32_t> west = frame(180.0);
+    const std::vector<uint32_t> north = frame(270.0);
+    const std::vector<uint32_t> south = frame(90.0);
 
-    // Non-vacuity first: the sampled strip has to be materially asymmetric, or
-    // "the two views agree" would hold however the renderer oriented the
-    // texture. A future symmetric texture fails here loudly instead of quietly
-    // turning the orientation assertions into tautologies.
-    const std::vector<uint32_t> east_reversed(east.rbegin(), east.rend());
-    REQUIRE(east != east_reversed);
-    const std::vector<uint32_t> north_reversed(north.rbegin(), north.rend());
-    REQUIRE(north != north_reversed);
+    // Non-vacuity first: the rendered wall has to be materially asymmetric across
+    // the screen, or "the two views agree" would hold however the renderer
+    // oriented the texture. A future symmetric texture fails here loudly instead
+    // of quietly turning the orientation assertions into tautologies.
+    auto mirrored = [](const std::vector<uint32_t> &source) {
+        std::vector<uint32_t> flipped(source.size());
+        for (int row = 0; row < eh::Framebuffer::H; ++row) {
+            for (int column = 0; column < eh::Framebuffer::W; ++column) {
+                flipped[static_cast<std::size_t>(row) * eh::Framebuffer::W +
+                        static_cast<std::size_t>(column)] =
+                    source[static_cast<std::size_t>(row) * eh::Framebuffer::W +
+                           static_cast<std::size_t>(eh::Framebuffer::W - 1 - column)];
+            }
+        }
+        return flipped;
+    };
+    REQUIRE(east != mirrored(east));
+    REQUIRE(north != mirrored(north));
 
     // Both axes are checked because the correction is two independent clauses,
     // and each was confirmed to survive the suite on its own.
