@@ -159,6 +159,60 @@ TEST_CASE("player: an egg behind a wall is not damaged") {
     REQUIRE(event_count(game, eh::EventType::EggHit) == 0);
 }
 
+// The test above fires straight down a row, so it only ever proves orthogonal occlusion.
+// `distance_to_wall` also has a branch for the exact-diagonal case, where the ray crosses an x
+// and a y grid line at the same distance -- a wall corner. It stops the shot when either
+// orthogonal neighbour of that corner is solid, so a bullet cannot squeeze between two tiles
+// meeting at a point. Disabling that branch left the suite at 110/110.
+//
+// The branch is not dead code. A sweep of 63,488 shots (every open tile, four sub-tile offsets,
+// 64 headings) found exactly one outcome that changes, and it is a real exploit: from
+// (18.5, 7.5) facing 315 degrees, an egg 2.83 tiles away loses 34 health through the corner of a
+// solid wall. One case in 63,488 is why no hand-written fixture stumbled into it -- and the
+// corridor it happens in is one of only two links between the map's halves, so a player walking
+// the level passes through it.
+TEST_CASE("player: a shot cannot squeeze through the corner between two walls") {
+    eh::GameState game;
+    eh::reset(game, 11);
+    eh::Entity &egg = game.entities.front();
+    for (std::size_t i = 1; i < game.entities.size(); ++i) {
+        game.entities[i].alive = false;
+    }
+    egg.x = eh::fx_from_int(20) + eh::FX_ONE / 2;
+    egg.y = eh::fx_from_int(5) + eh::FX_ONE / 2;
+    game.player.angle = eh::angle_from_deg(315.0);
+
+    // Read out of the map rather than assumed, so a level edit fails here instead of quietly
+    // turning this into a second copy of the unobstructed-shot test. The diagonal leaves tile
+    // (18,7) for (19,6); (19,7) is solid and both (18,6) and the destination are open.
+    REQUIRE(game.level.map.is_wall(19, 7));
+    REQUIRE_FALSE(game.level.map.is_wall(18, 6));
+    REQUIRE_FALSE(game.level.map.is_wall(19, 6));
+
+    // The two sections differ only in which side of that corner the shooter stands on. Same
+    // heading, same target, same weapon -- so a failure cannot be blamed on range or aim.
+    SECTION("the wall corner stops it") {
+        game.player.x = eh::fx_from_int(18) + eh::FX_ONE / 2;
+        game.player.y = eh::fx_from_int(7) + eh::FX_ONE / 2;
+
+        eh::fire(game);
+
+        CHECK(egg.health == 60);
+        CHECK(egg.hit_flash == 0);
+        CHECK(event_count(game, eh::EventType::EggHit) == 0);
+    }
+
+    SECTION("past the corner the identical shot connects") {
+        game.player.x = eh::fx_from_int(19) + eh::FX_ONE / 2;
+        game.player.y = eh::fx_from_int(6) + eh::FX_ONE / 2;
+
+        eh::fire(game);
+
+        CHECK(egg.health == 26);
+        CHECK(event_count(game, eh::EventType::EggHit) == 1);
+    }
+}
+
 // mvp.md fixes the weapon's max range at 20 tiles. Cutting it to 4 passed all 98 tests -
 // not even the replay trajectory digest noticed - which would leave the gun useless down the
 // map's longest corridor while every close-range test stayed green, because the existing
