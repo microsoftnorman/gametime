@@ -78,6 +78,64 @@ int differing_pixels(const std::vector<uint32_t> &a, const std::vector<uint32_t>
     return count;
 }
 
+// A wall's absolute vertical scale was pinned by exactly one number, and that number is a
+// RATIO. `render: walls and sprites share one horizon but disagree on vertical scale` fits
+// row = horizon + scale/depth for each renderer and then asserts sprite_scale/wall_scale is
+// between 1.15 and 1.35. Measured against that suite:
+//
+//   every wall 50% taller (walls only)          1 test failed -- the divergence bound
+//   every wall 50% taller AND every sprite too  no wall test failed at all
+//
+// The second is the real hazard. The ratio survives any change the two renderers make
+// together, so nothing pinned how tall a wall actually is. Worse, that divergence bound is
+// the one assertion in the suite we already expect to be rewritten: which renderer's scale
+// is correct is an open playtest question, and resolving it by retuning either side
+// re-baselines the bound and deletes the last guard on walls with it.
+//
+// This pins the wall scale absolutely and geometrically, so it survives that rewrite:
+// (H/2 - wall_top) * depth == H/2 says a wall one tile away exactly fills the screen and
+// shrinks in exact inverse proportion to distance. It names no sprite and reproduces no
+// projection arithmetic.
+eh::GameState scale_corridor(int wall_column) {
+    constexpr int ROWS = 5;
+    constexpr int COLUMNS = 44;
+
+    eh::GameState game;
+    eh::reset(game, 0x5eed1234u);
+    game.screen = eh::Screen::Playing;
+    game.entities.clear();
+
+    eh::Map &map = game.level.map;
+    map.width = COLUMNS;
+    map.height = ROWS;
+    map.tiles.assign(static_cast<std::size_t>(COLUMNS) * ROWS, eh::Tile::Floor);
+    for (int x = 0; x < COLUMNS; ++x) {
+        map.tiles[static_cast<std::size_t>(x)] = eh::Tile::WallPantry;
+        map.tiles[static_cast<std::size_t>((ROWS - 1) * COLUMNS + x)] = eh::Tile::WallPantry;
+    }
+    for (int y = 0; y < ROWS; ++y) {
+        map.tiles[static_cast<std::size_t>(y * COLUMNS)] = eh::Tile::WallPantry;
+        map.tiles[static_cast<std::size_t>(y * COLUMNS + wall_column)] = eh::Tile::WallPantry;
+    }
+
+    game.player.x = eh::fx_from_float(1.5f);
+    game.player.y = eh::fx_from_float(2.5f);
+    game.player.angle = eh::angle_from_deg(0.0);
+    return game;
+}
+
+int wall_top_row(const Target &frame, const Target &reference) {
+    constexpr int CENTER = eh::Framebuffer::W / 2;
+    for (int y = 0; y < eh::Framebuffer::H; ++y) {
+        const auto offset =
+            static_cast<std::size_t>(y) * eh::Framebuffer::W + static_cast<std::size_t>(CENTER);
+        if (frame.pixels[offset] != reference.pixels[offset]) {
+            return y;
+        }
+    }
+    return -1;
+}
+
 } // namespace
 
 // The wall camera and the billboard camera each build their own basis from the same player
@@ -740,5 +798,47 @@ TEST_CASE("render: one trigger pull lights the weapon for the whole flash and no
         // The relationship, with no cooldown constant reproduced: every shot buys exactly one
         // flash duration of light, and pulling the trigger between shots buys nothing.
         CHECK(lit == shots * static_cast<int>(eh::MUZZLE_FLASH_TICKS));
+    }
+}
+TEST_CASE("render: a wall one tile away fills the screen and shrinks in proportion to distance") {
+    // Wall columns chosen so each face lands a whole number of half-tiles from the player at
+    // x = 1.5. The reference wall is 40.5 tiles away -- a nine-pixel sliver -- so the topmost
+    // row that differs from it is the near wall's top edge, measured rather than derived.
+    constexpr std::array<int, 4> WALL_COLUMNS{4, 6, 8, 12};
+    constexpr std::array<double, 4> DEPTHS{2.5, 4.5, 6.5, 10.5};
+    constexpr double HORIZON = eh::Framebuffer::H / 2;
+
+    Target reference;
+    eh::render_walls(scale_corridor(42), reference.framebuffer);
+
+    std::array<int, 4> tops{};
+    for (std::size_t i = 0; i < WALL_COLUMNS.size(); ++i) {
+        Target frame;
+        eh::render_walls(scale_corridor(WALL_COLUMNS[i]), frame.framebuffer);
+        tops[i] = wall_top_row(frame, reference);
+
+        INFO("depth " << DEPTHS[i] << " top row " << tops[i]);
+        REQUIRE(tops[i] > 0);
+        REQUIRE(tops[i] < HORIZON);
+    }
+
+    // Non-vacuity: the top edge must really climb toward the horizon as the wall recedes, so
+    // nothing below can be satisfied by an edge that never moved. Measured 108 -> 163.
+    REQUIRE(tops[3] - tops[0] > 40);
+    for (std::size_t i = 1; i < tops.size(); ++i) {
+        CHECK(tops[i] > tops[i - 1]);
+    }
+
+    // The contract, stated absolutely and in world terms: the wall's half-height in pixels
+    // times its distance in tiles is half the screen. Equivalently, a wall one tile away
+    // exactly fills the frame vertically. Measured 180.00, 180.00, 175.50, 178.50 against
+    // H/2 = 180.
+    //
+    // The top row is an integer, so one pixel of quantization costs up to `depth` in the
+    // product. The tolerance is that bound plus two, not a number tuned until it passed.
+    for (std::size_t i = 0; i < DEPTHS.size(); ++i) {
+        const double product = (HORIZON - static_cast<double>(tops[i])) * DEPTHS[i];
+        INFO("depth " << DEPTHS[i] << " top " << tops[i] << " (H/2 - top) * depth " << product);
+        CHECK(std::abs(product - HORIZON) <= DEPTHS[i] + 2.0);
     }
 }
