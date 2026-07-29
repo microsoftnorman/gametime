@@ -145,6 +145,120 @@ TEST_CASE("sprites: billboard in open space modifies pixels") {
     REQUIRE(buffer.guards_intact());
 }
 
+namespace {
+
+// Which screen columns did the billboard actually touch? Answered by reading pixels back
+// rather than by recomputing the projection, so this cannot agree with a broken renderer
+// by repeating its arithmetic.
+std::vector<bool> drawn_columns(const GuardedFramebuffer &buffer) {
+    const std::vector<uint32_t> pixels = buffer.pixels();
+    std::vector<bool> touched(static_cast<std::size_t>(eh::Framebuffer::W), false);
+    for (std::size_t y = 0; y < static_cast<std::size_t>(eh::Framebuffer::H); ++y) {
+        for (std::size_t x = 0; x < static_cast<std::size_t>(eh::Framebuffer::W); ++x) {
+            if (pixels[y * static_cast<std::size_t>(eh::Framebuffer::W) + x] != BACKGROUND) {
+                touched[x] = true;
+            }
+        }
+    }
+    return touched;
+}
+
+} // namespace
+
+// Occlusion is decided per column against fb.depth[screen_x]. Both occlusion tests above
+// fill the depth buffer with a single value, so they can only tell "wholly hidden" from
+// "wholly visible" - deciding the entire billboard from one column's depth passed 95/95.
+// The case that breaks is an egg peeking around a corner, which is ordinary play.
+TEST_CASE("sprites: a wall hides only the columns it really covers") {
+    eh::GameState state = state_facing_east();
+    state.entities.push_back(entity_at(1, eh::EntityType::Egg, 2.0f, 0.0f));
+    constexpr std::size_t SPLIT = static_cast<std::size_t>(eh::Framebuffer::W) / 2;
+
+    GuardedFramebuffer open;
+    eh::render_sprites(state, open.framebuffer);
+    const std::vector<bool> open_columns = drawn_columns(open);
+
+    // Non-vacuity: the billboard has to genuinely straddle the split, or hiding one side
+    // proves nothing at all.
+    const auto left_drawn = std::count(
+        open_columns.begin(), open_columns.begin() + static_cast<std::ptrdiff_t>(SPLIT), true);
+    const auto right_drawn = std::count(open_columns.begin() + static_cast<std::ptrdiff_t>(SPLIT),
+                                        open_columns.end(), true);
+    REQUIRE(left_drawn > 2);
+    REQUIRE(right_drawn > 2);
+
+    // A wall nearer than the egg, but only across the left half of the screen.
+    GuardedFramebuffer split;
+    for (std::size_t x = 0; x < SPLIT; ++x) {
+        split.depth[x] = 0.5f;
+    }
+    eh::render_sprites(state, split.framebuffer);
+    const std::vector<bool> split_columns = drawn_columns(split);
+
+    for (std::size_t x = 0; x < SPLIT; ++x) {
+        INFO("column " << x << " sits behind the near wall and must be hidden");
+        REQUIRE_FALSE(split_columns[x]);
+    }
+    for (std::size_t x = SPLIT; x < static_cast<std::size_t>(eh::Framebuffer::W); ++x) {
+        INFO("column " << x << " has open sight and must be untouched by the wall");
+        REQUIRE(split_columns[x] == open_columns[x]);
+    }
+    REQUIRE(split.guards_intact());
+}
+
+// Sprites never write to the depth buffer - it only ever holds wall distances - so which of
+// two overlapping eggs you see is decided purely by paint order. Reversing the far-to-near
+// sort passed 96/96, which would put a distant egg in front of a close one.
+TEST_CASE("sprites: the nearer of two overlapping eggs is the one you see") {
+    constexpr std::size_t X = static_cast<std::size_t>(eh::Framebuffer::W) / 2;
+
+    eh::GameState near_only = state_facing_east();
+    near_only.entities.push_back(entity_at(1, eh::EntityType::Egg, 2.0f, 0.0f));
+    GuardedFramebuffer near_buffer;
+    eh::render_sprites(near_only, near_buffer.framebuffer);
+    const std::vector<uint32_t> near_pixels = near_buffer.pixels();
+
+    eh::GameState far_only = state_facing_east();
+    far_only.entities.push_back(entity_at(2, eh::EntityType::Egg, 9.0f, 0.0f));
+    GuardedFramebuffer far_buffer;
+    eh::render_sprites(far_only, far_buffer.framebuffer);
+    const std::vector<uint32_t> far_pixels = far_buffer.pixels();
+
+    // Find a pixel both eggs paint, and paint differently. Measured rather than assumed:
+    // without such a pixel the comparison below would hold no matter what order they drew in.
+    std::size_t probe = 0;
+    bool found = false;
+    for (std::size_t y = 0; y < static_cast<std::size_t>(eh::Framebuffer::H); ++y) {
+        const std::size_t index = y * static_cast<std::size_t>(eh::Framebuffer::W) + X;
+        if (near_pixels[index] != BACKGROUND && far_pixels[index] != BACKGROUND &&
+            near_pixels[index] != far_pixels[index]) {
+            probe = index;
+            found = true;
+            break;
+        }
+    }
+    REQUIRE(found);
+
+    // Insertion order must not matter; only depth may decide. Both orders are checked so a
+    // renderer that simply drew entities as listed could not pass by luck.
+    for (const bool near_first : {true, false}) {
+        eh::GameState both = state_facing_east();
+        if (near_first) {
+            both.entities.push_back(entity_at(1, eh::EntityType::Egg, 2.0f, 0.0f));
+            both.entities.push_back(entity_at(2, eh::EntityType::Egg, 9.0f, 0.0f));
+        } else {
+            both.entities.push_back(entity_at(2, eh::EntityType::Egg, 9.0f, 0.0f));
+            both.entities.push_back(entity_at(1, eh::EntityType::Egg, 2.0f, 0.0f));
+        }
+
+        GuardedFramebuffer buffer;
+        eh::render_sprites(both, buffer.framebuffer);
+
+        INFO("near egg pushed first: " << near_first);
+        REQUIRE(buffer.pixels()[probe] == near_pixels[probe]);
+    }
+}
+
 // A wall and a billboard must project through the same camera. FOV_RADIANS was
 // declared privately in both raycast.cpp and sprites.cpp; setting the sprite
 // copy to 75 degrees while the wall copy stayed at 66 was verified to pass all
