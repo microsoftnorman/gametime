@@ -7,6 +7,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -56,6 +58,93 @@ eh::GameState scene() {
 }
 
 } // namespace
+
+// The wall camera and the billboard camera each build their own basis from the same player
+// angle, and nothing made them agree. Freezing the sprite basis at east left 93/93 green: the
+// walls turned with the player and the eggs did not. Mirroring the sprite plane was caught only
+// by a 3-pixel rounding artifact at a single heading, which is luck, not coverage.
+//
+// This tracks one fixed world feature -- the open east corridor -- through both renderers while
+// the camera sweeps across it. The deepest wall column and a billboard placed down the same
+// corridor must travel together.
+TEST_CASE("render: walls and sprites sweep together when the camera turns") {
+    constexpr int TOLERANCE = 40;
+    constexpr std::array<int, 5> HEADINGS{-24, -12, 0, 12, 24};
+
+    std::array<int, HEADINGS.size()> wall_columns{};
+    std::array<int, HEADINGS.size()> sprite_columns{};
+
+    for (std::size_t index = 0; index < HEADINGS.size(); ++index) {
+        const int heading = HEADINGS[index];
+        CAPTURE(heading);
+
+        eh::GameState state;
+        eh::reset(state, 0x5eed1234u);
+        state.screen = eh::Screen::Playing;
+        state.entities.clear();
+        state.player.angle = eh::angle_from_deg(static_cast<double>(heading));
+
+        Target walls;
+        eh::render_walls(state, walls.framebuffer);
+
+        // The far end of the corridor is the deepest thing in view; its columns locate the
+        // world direction the camera is looking down.
+        float deepest = -1.0f;
+        for (float sample : walls.depth) {
+            if (sample < 1000.0f) {
+                deepest = std::max(deepest, sample);
+            }
+        }
+        REQUIRE(deepest > 0.0f);
+
+        long long column_sum = 0;
+        long long column_count = 0;
+        for (int column = 0; column < eh::Framebuffer::W; ++column) {
+            if (walls.depth[static_cast<std::size_t>(column)] >= deepest - 0.25f) {
+                column_sum += column;
+                ++column_count;
+            }
+        }
+        REQUIRE(column_count > 0);
+        wall_columns[index] = static_cast<int>(column_sum / column_count);
+
+        // One egg parked down that same corridor, drawn over the same walls.
+        eh::Entity egg;
+        egg.id = 9001;
+        egg.type = eh::EntityType::Egg;
+        egg.x = static_cast<eh::fx>(state.player.x + eh::fx_from_int(8));
+        egg.y = state.player.y;
+        egg.alive = true;
+        state.entities.push_back(egg);
+
+        Target both;
+        eh::render_walls(state, both.framebuffer);
+        eh::render_sprites(state, both.framebuffer);
+
+        int left = eh::Framebuffer::W;
+        int right = -1;
+        for (int y = 0; y < eh::Framebuffer::H; ++y) {
+            for (int x = 0; x < eh::Framebuffer::W; ++x) {
+                const std::size_t offset =
+                    static_cast<std::size_t>(y) * eh::Framebuffer::W + static_cast<std::size_t>(x);
+                if (both.pixels[offset] != walls.pixels[offset]) {
+                    left = std::min(left, x);
+                    right = std::max(right, x);
+                }
+            }
+        }
+        REQUIRE(right >= left);
+        sprite_columns[index] = (left + right) / 2;
+
+        CAPTURE(wall_columns[index], sprite_columns[index]);
+        REQUIRE(std::abs(wall_columns[index] - sprite_columns[index]) <= TOLERANCE);
+    }
+
+    // Both really do sweep across the screen, so the agreement above is not two frozen cameras
+    // agreeing with each other.
+    REQUIRE(wall_columns.front() - wall_columns.back() > 300);
+    REQUIRE(sprite_columns.front() - sprite_columns.back() > 300);
+}
 
 TEST_CASE("render: the frame draws every layer, with the HUD last") {
     const eh::GameState state = scene();

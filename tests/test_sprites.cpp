@@ -188,6 +188,49 @@ TEST_CASE("sprites: billboard behind the camera is rejected") {
     REQUIRE(buffer.guards_intact());
 }
 
+// Every other sprite test faces east, so the billboard camera basis could be frozen at east and
+// the whole suite stayed green: walls turned with the player and the eggs did not. These two
+// cases are the same contract as the tests above, asked at headings other than zero. Handedness
+// is pinned separately against the wall renderer in test_render.cpp, because a dead-ahead egg is
+// left/right symmetric and cannot see a mirrored camera plane.
+TEST_CASE("sprites: billboards follow the camera around, not just east") {
+    constexpr double DEGREES_TO_RADIANS = 3.14159265358979323846 / 180.0;
+    constexpr double DISTANCE = 3.0;
+    const std::array<double, 6> headings{0.0, 37.0, 90.0, 180.0, 214.0, 300.0};
+
+    for (double heading : headings) {
+        CAPTURE(heading);
+        const double radians = heading * DEGREES_TO_RADIANS;
+        const auto ahead_x = static_cast<float>(std::cos(radians) * DISTANCE);
+        const auto ahead_y = static_cast<float>(std::sin(radians) * DISTANCE);
+
+        eh::GameState ahead = state_facing_east();
+        ahead.player.angle = eh::angle_from_deg(heading);
+        ahead.entities.push_back(entity_at(1, eh::EntityType::Egg, ahead_x, ahead_y));
+
+        GuardedFramebuffer ahead_buffer;
+        eh::render_sprites(ahead, ahead_buffer.framebuffer);
+        const PixelBounds bounds = modified_bounds(ahead_buffer);
+        REQUIRE(ahead_buffer.guards_intact());
+
+        // An egg dead ahead is centre-screen. That is what "ahead" means, at any heading.
+        REQUIRE(bounds.valid());
+        const int centre = (bounds.left + bounds.right) / 2;
+        CAPTURE(centre, bounds.left, bounds.right);
+        REQUIRE(std::abs(centre - eh::Framebuffer::W / 2) <= 2);
+
+        // The same egg directly behind is culled, at the same heading.
+        eh::GameState behind = state_facing_east();
+        behind.player.angle = eh::angle_from_deg(heading);
+        behind.entities.push_back(entity_at(1, eh::EntityType::Egg, -ahead_x, -ahead_y));
+
+        GuardedFramebuffer behind_buffer;
+        eh::render_sprites(behind, behind_buffer.framebuffer);
+        REQUIRE(behind_buffer.pixels_unchanged());
+        REQUIRE(behind_buffer.guards_intact());
+    }
+}
+
 TEST_CASE("sprites: equal camera depth uses stable entity id ordering") {
     eh::GameState first = state_facing_east();
     first.entities.push_back(entity_at(20, eh::EntityType::Egg, 2.0f, 0.0f));
