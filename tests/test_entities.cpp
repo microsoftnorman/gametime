@@ -128,6 +128,32 @@ TEST_CASE("entities: line of sight gates idle eggs") {
     REQUIRE(hidden.ai == eh::AiState::Idle);
 }
 
+// mvp.md fixes the egg sight range at 12 tiles. Widening it to 40 - every egg on the map
+// waking at once, in a level whose longest sightline is under 20 - was caught only by the
+// replay trajectory digest, which reports that something moved without naming it.
+TEST_CASE("entities: eggs wake inside twelve tiles and ignore you beyond it") {
+    eh::GameState gs = fresh_game();
+    eh::Entity &egg = entity_of_type(gs, eh::EntityType::Egg);
+    disable_other_eggs(gs, egg.id);
+    place(egg, 17, 3);
+    gs.player.y = tile_center(3);
+
+    SECTION("fourteen tiles away it stays asleep") {
+        gs.player.x = tile_center(3);
+        eh::entities_tick(gs);
+        REQUIRE(egg.ai == eh::AiState::Idle);
+    }
+
+    SECTION("nine tiles down the same sightline it wakes") {
+        // Control for the section above. Same egg, same row, same walls between them - only
+        // the distance changes. Without it, a blocked corridor would satisfy the idle case
+        // and the test would pass while asserting nothing about range at all.
+        gs.player.x = tile_center(8);
+        eh::entities_tick(gs);
+        REQUIRE(egg.ai == eh::AiState::Chase);
+    }
+}
+
 TEST_CASE("entities: chase forgets the player only after the sight grace period") {
     eh::GameState gs = fresh_game();
     eh::Entity &egg = entity_of_type(gs, eh::EntityType::Egg);

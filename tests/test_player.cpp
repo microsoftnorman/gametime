@@ -159,6 +159,29 @@ TEST_CASE("player: an egg behind a wall is not damaged") {
     REQUIRE(event_count(game, eh::EventType::EggHit) == 0);
 }
 
+// mvp.md fixes the weapon's max range at 20 tiles. Cutting it to 4 passed all 98 tests -
+// not even the replay trajectory digest noticed - which would leave the gun useless down the
+// map's longest corridor while every close-range test stayed green, because the existing
+// shooting tests all fire from about three tiles away.
+//
+// The upper bound is deliberately not asserted. At 20 tiles the limit is longer than any open
+// sightline in this level, so it is unobservable here; claiming to test it would be a fiction.
+TEST_CASE("player: a shot carries the full length of the longest corridor") {
+    eh::GameState game;
+    eh::reset(game, 9);
+    eh::Entity &egg = game.entities.front();
+    for (std::size_t i = 1; i < game.entities.size(); ++i) {
+        game.entities[i].alive = false;
+    }
+    egg.x = eh::fx_from_int(22) + eh::FX_ONE / 2;
+    egg.y = game.player.y;
+
+    eh::fire(game);
+
+    REQUIRE(egg.health == 26);
+    REQUIRE(event_count(game, eh::EventType::EggHit) == 1);
+}
+
 TEST_CASE("player: an unobstructed egg takes exactly 34 damage without changing the count") {
     eh::GameState game;
     eh::reset(game, 8);
