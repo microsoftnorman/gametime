@@ -154,6 +154,34 @@ TEST_CASE("entities: eggs wake inside twelve tiles and ignore you beyond it") {
     }
 }
 
+TEST_CASE("entities: a killing blow neither knocks the egg back nor refreshes its flash") {
+    eh::GameState gs = fresh_game();
+    eh::Entity &egg = entity_of_type(gs, eh::EntityType::Egg);
+    disable_other_eggs(gs, egg.id);
+    place(egg, 8, 3);
+    gs.player.x = tile_center(5);
+    gs.player.y = tile_center(3);
+
+    const eh::fx x_before = egg.x;
+    const eh::fx y_before = egg.y;
+
+    // Exactly what player.cpp's fire() writes at the hit site for a lethal shot.
+    egg.health = -1;
+    egg.hit_flash = 9;
+    gs.events.push_back({eh::EventType::EggHit, egg.id});
+
+    eh::entities_tick(gs);
+
+    REQUIRE_FALSE(egg.alive);
+    REQUIRE(egg.x == x_before);
+    REQUIRE(egg.y == y_before);
+    // Measured, not assumed. entities_tick decrements every entity's flash before
+    // apply_hit_reactions runs, so a surviving egg is reset to 9 by the reaction path while a
+    // fatal hit, which the health guard skips, keeps the already-decremented 8. It is NOT the
+    // 9 the player wrote at the hit site.
+    REQUIRE(egg.hit_flash == 8);
+}
+
 TEST_CASE("entities: chase forgets the player only after the sight grace period") {
     eh::GameState gs = fresh_game();
     eh::Entity &egg = entity_of_type(gs, eh::EntityType::Egg);

@@ -268,7 +268,12 @@ void apply_hit_reactions(GameState &gs, std::size_t event_count) {
                 continue;
             }
 
-            // entities_tick is authoritative; this supersedes the player's hit-site write.
+            // Authoritative for surviving eggs: this supersedes the player's hit-site write.
+            // A fatal hit skips this path via the health guard above, and so keeps whatever
+            // the decrement at the top of entities_tick left behind -- 8, not the 9 the player
+            // wrote. Measured, not assumed; see the killing-blow test. Neither the flash nor
+            // the skipped knockback is visible, because the egg is marked not alive in this
+            // same tick and render_sprites skips it.
             entity.hit_flash = HIT_FLASH_TICKS;
             int64_t dx = static_cast<int64_t>(entity.x) - gs.player.x;
             int64_t dy = static_cast<int64_t>(entity.y) - gs.player.y;
