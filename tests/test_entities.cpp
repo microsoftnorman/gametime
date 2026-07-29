@@ -608,3 +608,113 @@ TEST_CASE("entities: a sightline cannot squeeze through the corner between two w
         CHECK(egg.ai == eh::AiState::Chase);
     }
 }
+
+// Finding #56. `entities_tick` treats the tick that kills the player as terminal: once health
+// reaches zero it emits Lose and returns, so the pickup loop below never runs and no further egg
+// may strike. Both halves of that contract passed 127/127 when removed.
+//
+// The pickup half is the severe one, measured rather than argued: with the early `return` deleted,
+// a player killed while standing on a carrot ends the tick at 25 health with the carrot consumed
+// and a cheerful Pickup event riding alongside Lose -- you die, heal, and hear the pickup jingle
+// over the defeat sting. `entities: lethal contact emits one lose event` asserts exactly the right
+// thing (`health == 0`, even 100 ticks later) and could not see it, because its fixture places
+// nothing within PICKUP_RANGE of the dying player. Finding #38's shape again: the assertion was
+// right and the fixture made the code under test irrelevant.
+//
+// The corpse half is honestly narrower. Dropping `gs.player.health <= 0` from attack_player's
+// guard lets a second contact egg strike the same tick, which yields a duplicate PlayerHurt event
+// and burns that egg's cooldown. It is *not* audible today -- main.cpp plays one sound per event
+// type per tick (finding #26) and hurt_flash is already saturated -- so this pins the event
+// contract, not something on screen. Said plainly rather than dressed up.
+//
+// Not covered, and unreachable rather than untested: the same `return` also guards the Win check.
+// Reaching it dead requires eggs_remaining == 0 while an egg is alive enough to land a killing
+// blow, and eggs_remaining tracks the live count exactly, so no such state exists.
+//
+// Every negative here is paired with a positive control on the same instrument (finding #48's
+// rule): the carrot must genuinely be in reach, and both eggs must genuinely be able to strike,
+// or "it was not collected" and "only one hurt event" are satisfied by a fixture that reaches
+// nothing.
+TEST_CASE("entities: the tick that kills you is the last thing that happens to you") {
+    eh::GameState gs = fresh_game();
+
+    eh::Entity &egg = entity_of_type(gs, eh::EntityType::Egg);
+    eh::Entity &second_egg = entity_of_type(gs, eh::EntityType::Egg, 1);
+    disable_other_eggs(gs, egg.id, second_egg.id);
+    second_egg.alive = false;
+
+    egg.x = gs.player.x + eh::FX_ONE / 2;
+    egg.y = gs.player.y;
+    egg.ai = eh::AiState::Attack;
+    egg.timer = 0;
+
+    // Only the carrot under test may be in reach, so a section cannot be answered by a
+    // neighbouring pickup (finding #36).
+    eh::Entity &carrot = entity_of_type(gs, eh::EntityType::Carrot);
+    for (eh::Entity &entity : gs.entities) {
+        if (entity.id != carrot.id &&
+            (entity.type == eh::EntityType::Carrot || entity.type == eh::EntityType::Jellybean)) {
+            entity.alive = false;
+        }
+    }
+    carrot.x = gs.player.x;
+    carrot.y = gs.player.y;
+
+    SECTION("a survivable blow still collects the carrot underfoot") {
+        gs.player.health = 40;
+
+        eh::entities_tick(gs);
+
+        // 40 - 12 contact damage, then +25 from the carrot.
+        CHECK(gs.player.health == 53);
+        CHECK_FALSE(carrot.alive);
+        CHECK(event_count(gs, eh::EventType::Pickup) == 1);
+        CHECK(event_count(gs, eh::EventType::Lose) == 0);
+    }
+
+    SECTION("a lethal blow leaves the carrot on the floor and the player at zero") {
+        gs.player.health = 12;
+
+        eh::entities_tick(gs);
+
+        CAPTURE(gs.player.health, gs.events.size());
+        CHECK(gs.player.health == 0);
+        CHECK(carrot.alive);
+        CHECK(event_count(gs, eh::EventType::Pickup) == 0);
+        CHECK(event_count(gs, eh::EventType::Lose) == 1);
+    }
+
+    SECTION("two contact eggs both strike a living player") {
+        // The carrot belongs to the sections above; left underfoot it heals both hits straight
+        // back to the cap and hides whether either egg struck at all.
+        carrot.alive = false;
+        second_egg.alive = true;
+        second_egg.x = gs.player.x - eh::FX_ONE / 2;
+        second_egg.y = gs.player.y;
+        second_egg.ai = eh::AiState::Attack;
+        second_egg.timer = 0;
+        gs.player.health = 100;
+
+        eh::entities_tick(gs);
+
+        CHECK(gs.player.health == 76);
+        CHECK(event_count(gs, eh::EventType::PlayerHurt) == 2);
+    }
+
+    SECTION("the second egg does not strike a corpse") {
+        carrot.alive = false;
+        second_egg.alive = true;
+        second_egg.x = gs.player.x - eh::FX_ONE / 2;
+        second_egg.y = gs.player.y;
+        second_egg.ai = eh::AiState::Attack;
+        second_egg.timer = 0;
+        gs.player.health = 12;
+
+        eh::entities_tick(gs);
+
+        CAPTURE(gs.player.health, gs.events.size());
+        CHECK(gs.player.health == 0);
+        CHECK(event_count(gs, eh::EventType::PlayerHurt) == 1);
+        CHECK(second_egg.timer == 0);
+    }
+}
