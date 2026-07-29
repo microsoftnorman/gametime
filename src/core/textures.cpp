@@ -42,13 +42,10 @@ uint32_t fallback_color(Tile tile) {
     case Tile::Floor:
         return rgba(70, 52, 38);
     case Tile::WallBurrow:
-        return rgba(112, 72, 44);
     case Tile::WallPantry:
-        return rgba(196, 184, 148);
     case Tile::WallCellar:
-        return rgba(88, 96, 104);
     case Tile::WallBasket:
-        return rgba(164, 112, 52);
+        return wall_swatch(tile);
     }
     return rgba(255, 0, 255);
 }
@@ -179,6 +176,22 @@ void init_textures() {
         generate_basket(wall_textures[3]);
         textures_ready.store(true, std::memory_order_release);
     });
+}
+
+uint32_t wall_swatch(Tile tile) {
+    switch (tile) {
+    case Tile::WallBurrow:
+        return rgba(112, 72, 44);
+    case Tile::WallPantry:
+        return rgba(196, 184, 148);
+    case Tile::WallCellar:
+        return rgba(88, 96, 104);
+    case Tile::WallBasket:
+        return rgba(164, 112, 52);
+    case Tile::Floor:
+        break;
+    }
+    return rgba(255, 0, 255);
 }
 
 uint32_t sample_wall(Tile tile, int tx, int ty) {

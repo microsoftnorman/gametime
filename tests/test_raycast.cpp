@@ -584,3 +584,73 @@ TEST_CASE("raycast: a wall tile shows exactly one full texture period") {
         CHECK(matching * 4 < compared);
     }
 }
+
+// texture_index() maps a Tile to a texture slot, and init_textures() fills each slot from a
+// named generator. Those are two hand-written orderings that have to agree, with nothing tying
+// them together: exchanging the slots the pantry and cellar tiles point at passed 120/120. Every
+// wall stayed distinct from every other wall, which is precisely what the distinctness checks
+// above assert - a swap preserves difference and exchanges only identity. wall_swatch() states
+// the intended appearance separately, so the generated art can be held against what it is
+// supposed to be instead of against another piece of generated art.
+TEST_CASE("textures: each wall tile draws the artwork its own swatch describes") {
+    constexpr std::array<eh::Tile, 4> WALLS{eh::Tile::WallBurrow, eh::Tile::WallPantry,
+                                            eh::Tile::WallCellar, eh::Tile::WallBasket};
+
+    std::array<std::array<double, 3>, 4> mean{};
+    for (std::size_t i = 0; i < WALLS.size(); ++i) {
+        std::array<long long, 3> sum{};
+        for (int y = 0; y < eh::WALL_TEXTURE_SIZE; ++y) {
+            for (int x = 0; x < eh::WALL_TEXTURE_SIZE; ++x) {
+                const uint32_t texel = eh::sample_wall(WALLS[i], x, y);
+                sum[0] += texel & 0xffu;
+                sum[1] += (texel >> 8) & 0xffu;
+                sum[2] += (texel >> 16) & 0xffu;
+            }
+        }
+        const auto texels = static_cast<double>(eh::WALL_TEXTURE_SIZE) * eh::WALL_TEXTURE_SIZE;
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            mean[i][channel] = static_cast<double>(sum[channel]) / texels;
+        }
+    }
+
+    const auto channels = [](uint32_t color) {
+        return std::array<double, 3>{static_cast<double>(color & 0xffu),
+                                     static_cast<double>((color >> 8) & 0xffu),
+                                     static_cast<double>((color >> 16) & 0xffu)};
+    };
+    const auto distance_squared = [](const std::array<double, 3> &a,
+                                     const std::array<double, 3> &b) {
+        double total = 0.0;
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            const double delta = a[channel] - b[channel];
+            total += delta * delta;
+        }
+        return total;
+    };
+
+    SECTION("the artwork averages to the colour its own tile declares") {
+        // Measured worst case is 11.2 on one channel of the pantry; an exchanged pair misses by
+        // more than 100, so this bound separates art that drifted from art that is not its own.
+        for (std::size_t i = 0; i < WALLS.size(); ++i) {
+            const std::array<double, 3> declared = channels(eh::wall_swatch(WALLS[i]));
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                CAPTURE(i, channel, mean[i][channel], declared[channel]);
+                CHECK(std::abs(mean[i][channel] - declared[channel]) < 30.0);
+            }
+        }
+    }
+
+    SECTION("no wall resembles another wall's declaration more than its own") {
+        for (std::size_t i = 0; i < WALLS.size(); ++i) {
+            const double own = distance_squared(mean[i], channels(eh::wall_swatch(WALLS[i])));
+            for (std::size_t j = 0; j < WALLS.size(); ++j) {
+                if (i == j) {
+                    continue;
+                }
+                const double other = distance_squared(mean[i], channels(eh::wall_swatch(WALLS[j])));
+                CAPTURE(i, j, own, other);
+                CHECK(own * 4.0 < other);
+            }
+        }
+    }
+}
