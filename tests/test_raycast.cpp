@@ -4,6 +4,7 @@
 #include "core/state.h"
 #include "core/textures.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -270,6 +271,80 @@ TEST_CASE("raycast: walls facing along Y are shaded darker than walls facing alo
     const double ratio = y_face / x_face;
     REQUIRE(ratio > 0.6);
     REQUIRE(ratio < 0.8);
+}
+
+// mvp.md lists distance fog as a shipped feature, but nothing asserted it. The falloff
+// distance and the brightness floor existed as three independent literals across two
+// translation units, and all three of these mutations passed the entire 101-test suite:
+//   sprites 16 -> 48 while walls kept 16   (an egg glows against the wall behind it)
+//   walls   16 -> 48 while sprites kept 16 (the same disagreement, mirrored)
+//   both retuned to 48 with a 0.02 floor   (fog effectively switched off)
+// The expression now lives once in framebuffer.h. This pins the curve it produces.
+TEST_CASE("render: distance shading follows the documented curve") {
+    CHECK(eh::distance_brightness(0.0f) == Catch::Approx(1.0f));
+    CHECK(eh::distance_brightness(4.0f) == Catch::Approx(0.75f));
+    CHECK(eh::distance_brightness(8.0f) == Catch::Approx(0.5f));
+
+    // The floor is reached at 12 tiles, not at the 16 tile falloff distance, because
+    // 1 - 12/16 is already 0.25. Everything beyond 12 tiles is equally dark.
+    CHECK(eh::distance_brightness(12.0f) == Catch::Approx(0.25f));
+    CHECK(eh::distance_brightness(16.0f) == Catch::Approx(0.25f));
+    CHECK(eh::distance_brightness(1000.0f) == Catch::Approx(0.25f));
+
+    // Never brighter than unshaded, even behind the camera plane.
+    CHECK(eh::distance_brightness(-5.0f) == Catch::Approx(1.0f));
+}
+
+// Proves render_walls actually consults the shared curve. Hoisting a constant that nobody
+// calls would satisfy the test above while leaving the screen flat.
+TEST_CASE("render: the far end of the corridor is shaded darker than the near wall") {
+    eh::GameState game;
+    eh::reset(game, 0x1234567u);
+    eh::init_textures();
+    TestFramebuffer target;
+
+    // The same east border wall, viewed from two distances along the open corridor at
+    // y = 3.5. Sampling a narrow band on the horizon keeps every sampled row inside the
+    // wall at both distances, since the far view is only about 18 pixels tall.
+    constexpr int BAND = 25;
+    constexpr int FIRST_ROW = 176;
+    constexpr int LAST_ROW = 184;
+
+    auto mean_wall_luma = [&](int player_tile_x, float expected_depth) {
+        game.player.x = eh::fx_from_int(player_tile_x) + eh::FX_ONE / 2;
+        game.player.y = eh::fx_from_int(3) + eh::FX_ONE / 2;
+        game.player.angle = eh::angle_from_deg(0.0);
+        eh::render_walls(game, target.framebuffer);
+
+        double total = 0.0;
+        int samples = 0;
+        for (int column = eh::Framebuffer::W / 2 - BAND; column < eh::Framebuffer::W / 2 + BAND;
+             ++column) {
+            REQUIRE(std::abs(target.depth[static_cast<std::size_t>(column)] - expected_depth) <
+                    0.001f);
+            for (int row = FIRST_ROW; row < LAST_ROW; ++row) {
+                const uint32_t pixel =
+                    target.pixels[static_cast<std::size_t>(row) * eh::Framebuffer::W +
+                                  static_cast<std::size_t>(column)];
+                total += static_cast<double>((pixel >> 16) & 0xffu) +
+                         static_cast<double>((pixel >> 8) & 0xffu) +
+                         static_cast<double>(pixel & 0xffu);
+                ++samples;
+            }
+        }
+        return total / static_cast<double>(samples);
+    };
+
+    const double near_luma = mean_wall_luma(20, 2.5f);
+    const double far_luma = mean_wall_luma(3, 19.5f);
+
+    // Asserted as a ratio because the two views sample the texture at very different
+    // vertical compressions, so absolute luma is not comparable. At 2.5 tiles the factor
+    // is 0.844 and at 19.5 tiles it is clamped to the 0.25 floor, a true ratio of 0.30.
+    // A 48 tile falloff would raise it to 0.63 and no fog at all would put it near 1.0.
+    REQUIRE(near_luma > 0.0);
+    REQUIRE(far_luma < near_luma);
+    REQUIRE(far_luma / near_luma < 0.45);
 }
 
 TEST_CASE("raycast: rendering preserves pixel and depth guards") {

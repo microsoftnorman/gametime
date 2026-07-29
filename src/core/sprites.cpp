@@ -531,7 +531,7 @@ void render_sprites(const GameState &gs, Framebuffer &fb) {
         const int draw_bottom =
             static_cast<int>(std::min(static_cast<float>(Framebuffer::H), std::ceil(bottom))) - 1;
 
-        const float brightness = std::clamp(1.0f - sprite.depth / 16.0f, 0.25f, 1.0f);
+        const float brightness = distance_brightness(sprite.depth);
         for (int screen_x = draw_left; screen_x <= draw_right; ++screen_x) {
             if (sprite.depth >= fb.depth[screen_x]) {
                 continue;

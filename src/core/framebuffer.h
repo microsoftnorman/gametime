@@ -26,6 +26,21 @@ inline uint32_t rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
            (static_cast<uint32_t>(b) << 16) | (static_cast<uint32_t>(a) << 24);
 }
 
+// Distance shading, shared by every renderer that draws world geometry. Walls
+// (raycast.cpp) and billboards (sprites.cpp) must fade at the same rate over the
+// same distance to the same floor, or an egg glows against the wall behind it
+// while the wall darkens around it. These were three independent literals spread
+// across two translation units: pointing the sprite copy at a 48 tile falloff
+// while walls kept 16 was verified to pass the entire test suite, as was
+// retuning both consistently. The expression is hoisted rather than the two
+// constants, because the contract is the whole curve and not its coefficients.
+inline constexpr float FOG_DISTANCE = 16.0f;
+inline constexpr float MIN_BRIGHTNESS = 0.25f;
+
+inline float distance_brightness(float depth) {
+    return std::clamp(1.0f - depth / FOG_DISTANCE, MIN_BRIGHTNESS, 1.0f);
+}
+
 inline uint32_t shade(uint32_t color, float factor) {
     const auto scale = [factor](uint8_t channel) {
         return static_cast<uint8_t>(

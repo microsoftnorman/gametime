@@ -497,6 +497,43 @@ TEST_CASE("sprites: billboards scale inversely with distance") {
     REQUIRE(near_width / far_width == Catch::Approx(2.0f).epsilon(0.05));
 }
 
+// The sprite half of the shared fog contract. Pointing sprites.cpp at a 48 tile falloff
+// while walls kept 16 passed all 101 tests, which would leave an egg glowing against a wall
+// that darkens around it. This proves render_sprites consults the shared curve.
+TEST_CASE("sprites: a distant egg is shaded darker than a near one") {
+    auto mean_egg_luma = [](float distance) {
+        eh::GameState state = state_facing_east();
+        state.entities.clear();
+        state.entities.push_back(entity_at(1, eh::EntityType::Egg, distance, 0.0f));
+
+        GuardedFramebuffer buffer;
+        eh::render_sprites(state, buffer.framebuffer);
+
+        double total = 0.0;
+        int samples = 0;
+        for (const uint32_t pixel : buffer.pixels()) {
+            if (pixel == BACKGROUND) {
+                continue;
+            }
+            total += static_cast<double>((pixel >> 16) & 0xffu) +
+                     static_cast<double>((pixel >> 8) & 0xffu) + static_cast<double>(pixel & 0xffu);
+            ++samples;
+        }
+        REQUIRE(samples > 0);
+        return total / static_cast<double>(samples);
+    };
+
+    const double near_luma = mean_egg_luma(2.0f);
+    const double far_luma = mean_egg_luma(14.0f);
+
+    // 0.875 at two tiles against the clamped 0.25 floor at fourteen: a true ratio of 0.29.
+    // A 48 tile falloff would raise it to 0.75. Compared as a ratio because the far egg
+    // covers far fewer pixels and so samples the billboard differently.
+    REQUIRE(near_luma > 0.0);
+    REQUIRE(far_luma < near_luma);
+    REQUIRE(far_luma / near_luma < 0.5);
+}
+
 TEST_CASE("sprites: a freshly hit egg renders visibly tinted") {
     // hit_flash is set by entities_tick, set again by fire(), decremented every tick, and
     // serialized into the replay digest - three workstreams assert the number is 9. None

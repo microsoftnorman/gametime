@@ -155,7 +155,7 @@ void render_walls(const GameState &gs, Framebuffer &fb) {
         const float texture_step =
             static_cast<float>(TEXTURE_SIZE) / static_cast<float>(wall_height);
         float texture_position = static_cast<float>(draw_start - wall_top) * texture_step;
-        float brightness = std::clamp(1.0f - perpendicular_distance / 16.0f, 0.25f, 1.0f);
+        float brightness = distance_brightness(perpendicular_distance);
         if (hit.side == 1) {
             brightness *= 0.7f;
         }
