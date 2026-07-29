@@ -32,6 +32,40 @@ static_assert(std::is_same_v<std::underlying_type_t<eh::AiState>, std::uint8_t>)
 static_assert(std::is_same_v<std::underlying_type_t<eh::Tile>, std::uint8_t>);
 static_assert(std::is_same_v<std::underlying_type_t<eh::EventType>, std::uint8_t>);
 
+// Compile-time completeness guard for serialize_state() below.
+//
+// serialize_state() names every field by hand, so it cannot notice a field added
+// to one of these structs later: the canonical byte stream is unchanged, every
+// golden digest still matches, and the new field sits permanently outside the
+// strongest oracle in this project. Measured, not assumed -- adding an
+// unserialized uint16_t to eh::Player passed all 105 tests, both goldens and the
+// tick-by-tick trajectory digest included.
+//
+// A structured binding must name EVERY public member, so these stop compiling the
+// moment a field is added or removed. sizeof would not have: a field that fits in
+// existing padding leaves it unchanged (measured -- a bool appended to eh::Entity
+// keeps sizeof at 28).
+//
+// If one of these fails to compile, that is the intended alarm. Add the new field
+// to serialize_state(), update the matching *_BYTES count above, then name it here.
+[[maybe_unused]] inline void serializer_covers_every_field() {
+    const auto &[e_id, e_type, e_x, e_y, e_health, e_ai, e_timer, e_flash, e_alive] = eh::Entity{};
+    (void)e_id, (void)e_type, (void)e_x, (void)e_y, (void)e_health, (void)e_ai, (void)e_timer,
+        (void)e_flash, (void)e_alive;
+
+    const auto &[p_x, p_y, p_angle, p_health, p_ammo, p_cooldown, p_hurt, p_bob] = eh::Player{};
+    (void)p_x, (void)p_y, (void)p_angle, (void)p_health, (void)p_ammo, (void)p_cooldown,
+        (void)p_hurt, (void)p_bob;
+
+    const auto &[v_type, v_entity_id] = eh::GameEvent{};
+    (void)v_type, (void)v_entity_id;
+
+    const auto &[g_screen, g_tick, g_level, g_player, g_entities, g_rng, g_eggs, g_muzzle, g_shake,
+                 g_events] = eh::GameState{};
+    (void)g_screen, (void)g_tick, (void)g_level, (void)g_player, (void)g_entities, (void)g_rng,
+        (void)g_eggs, (void)g_muzzle, (void)g_shake, (void)g_events;
+}
+
 struct CanonicalField {
     std::string name;
     std::string value;
