@@ -12,7 +12,7 @@
 
 namespace {
 
-constexpr int kSampleRate = 44100;
+constexpr int kSampleRate = eh::AUDIO_SAMPLE_RATE;
 constexpr std::array<eh::EventType, 7> kEventTypes{
     eh::EventType::Shot,   eh::EventType::EggHit,     eh::EventType::EggDeath,
     eh::EventType::Pickup, eh::EventType::PlayerHurt, eh::EventType::Win,

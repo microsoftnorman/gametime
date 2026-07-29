@@ -50,6 +50,14 @@ constexpr std::array<eh::EventType, 7> AUDIBLE_EVENTS{
     eh::EventType::Pickup, eh::EventType::PlayerHurt, eh::EventType::Win,
     eh::EventType::Lose};
 
+// The per-tick repeat filter below packs one bit per event type into a uint32_t. This was a
+// uint8_t, which fit today's seven enumerators with one slot spare; at a ninth the shift would
+// have fallen out of range and silently stopped de-duplicating, stacking repeats into clipping.
+// Widening removes that cliff rather than documenting it. No test can reach this file, so the
+// guard has to be a compile-time one.
+static_assert(static_cast<unsigned>(eh::EventType::Lose) < 32,
+              "played_this_tick is a uint32_t bitmask indexed by EventType");
+
 // raylib owns playback; game_core only synthesizes PCM. This is the seam.
 struct SoundBank {
     std::array<Sound, AUDIBLE_EVENTS.size()> sounds{};
@@ -63,9 +71,9 @@ struct SoundBank {
             }
             Wave wave{};
             wave.frameCount = static_cast<unsigned int>(pcm.samples.size());
-            wave.sampleRate = 44100;
-            wave.sampleSize = 16;
-            wave.channels = 1;
+            wave.sampleRate = eh::AUDIO_SAMPLE_RATE;
+            wave.sampleSize = eh::AUDIO_BITS_PER_SAMPLE;
+            wave.channels = eh::AUDIO_CHANNELS;
             // LoadSoundFromWave copies the data, so this temporary buffer is safe.
             wave.data = const_cast<int16_t *>(pcm.samples.data());
             sounds[i] = LoadSoundFromWave(wave);
@@ -192,13 +200,13 @@ int main() {
             // Events are cleared at the START of each tick, so drain them here,
             // inside the loop - not after it, or fast frames would lose sounds.
             // One play per type per tick keeps repeats from stacking into clipping.
-            uint8_t played_this_tick = 0;
+            uint32_t played_this_tick = 0;
             for (const eh::GameEvent &event : game.events) {
-                const auto bit = static_cast<uint8_t>(1u << static_cast<uint8_t>(event.type));
+                const uint32_t bit = 1u << static_cast<unsigned>(event.type);
                 if ((played_this_tick & bit) != 0) {
                     continue;
                 }
-                played_this_tick = static_cast<uint8_t>(played_this_tick | bit);
+                played_this_tick |= bit;
                 audio.play(event.type);
             }
 

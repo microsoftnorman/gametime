@@ -11,7 +11,6 @@
 namespace eh {
 namespace {
 
-constexpr int kSampleRate = 44100;
 constexpr int32_t kUnitGain = 32767;
 constexpr std::size_t kSoundCount = 7;
 
@@ -21,11 +20,11 @@ std::array<Pcm, kSoundCount> audio_bank;
 bool audio_bank_initialized = false;
 
 constexpr std::size_t samples_for_ms(int milliseconds) {
-    return static_cast<std::size_t>(kSampleRate * milliseconds / 1000);
+    return static_cast<std::size_t>(AUDIO_SAMPLE_RATE * milliseconds / 1000);
 }
 
 uint32_t phase_step(int frequency_hz) {
-    return static_cast<uint32_t>((static_cast<uint64_t>(frequency_hz) << 32) / kSampleRate);
+    return static_cast<uint32_t>((static_cast<uint64_t>(frequency_hz) << 32) / AUDIO_SAMPLE_RATE);
 }
 
 int interpolate(int start, int end, std::size_t index, std::size_t count) {
