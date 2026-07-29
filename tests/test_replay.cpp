@@ -48,6 +48,33 @@ static_assert(std::is_same_v<std::underlying_type_t<eh::EventType>, std::uint8_t
 //
 // If one of these fails to compile, that is the intended alarm. Add the new field
 // to serialize_state(), update the matching *_BYTES count above, then name it here.
+//
+// Finding #62. The guard originally covered the four aggregates named in
+// serialize_state()'s signature and stopped there, which left the two it reaches
+// THROUGH those aggregates unprotected -- serialize_state() also walks eh::Map
+// (as map.width / map.height / map.tile_count / map.tiles_digest) and eh::Rng (as
+// rng.state), member by member, from inside GameState. Binding GameState names
+// g_level and g_rng as single members and says nothing about what is inside them.
+//
+// Measured, with a control, rather than argued:
+//
+//   a new member on eh::Map     compiles, 133/133 pass -- silently unserialized
+//   a new member on eh::Rng     compiles, 133/133 pass -- silently unserialized
+//   a new member on eh::Player  BUILD FAILS -- the original guard fires
+//
+// eh::Rng is the sharp one: replay determinism rests entirely on rng.state, and
+// upgrading this xorshift to any two-word generator (PCG's state+inc being the
+// obvious candidate) would have left every golden digest passing while covering
+// half the generator. The guard now binds all six.
+//
+// eh::MapData and eh::SpawnPoint are bound but deliberately NOT serialized field
+// for field, so their bindings are an alarm rather than a checklist. That is
+// sound because MapData is immutable after reset() -- verified by inspecting
+// every level reference in src/core, all of which are reads -- and because its
+// observable consequences are already inside the canonical form: the spawn points
+// become the entity array and the player's starting pose, and the geometry is
+// covered by map.tiles_digest. If a member is ever added here, this stops
+// compiling and forces that judgement to be made again rather than skipped.
 [[maybe_unused]] inline void serializer_covers_every_field() {
     const auto &[e_id, e_type, e_x, e_y, e_health, e_ai, e_timer, e_flash, e_alive] = eh::Entity{};
     (void)e_id, (void)e_type, (void)e_x, (void)e_y, (void)e_health, (void)e_ai, (void)e_timer,
@@ -64,6 +91,23 @@ static_assert(std::is_same_v<std::underlying_type_t<eh::EventType>, std::uint8_t
                  g_events] = eh::GameState{};
     (void)g_screen, (void)g_tick, (void)g_level, (void)g_player, (void)g_entities, (void)g_rng,
         (void)g_eggs, (void)g_muzzle, (void)g_shake, (void)g_events;
+
+    // Reached through GameState, and walked member by member by serialize_state().
+    const auto &[m_width, m_height, m_tiles] = eh::Map{};
+    (void)m_width, (void)m_height, (void)m_tiles;
+
+    const auto &[r_state] = eh::Rng{};
+    (void)r_state;
+
+    // Bound as an alarm, not as a checklist -- see the note above on why level
+    // definition data is outside the canonical form.
+    const auto &[s_x, s_y] = eh::SpawnPoint{};
+    (void)s_x, (void)s_y;
+
+    const auto &[d_map, d_player, d_angle, d_eggs, d_jellybeans, d_carrots, d_basket] =
+        eh::MapData{};
+    (void)d_map, (void)d_player, (void)d_angle, (void)d_eggs, (void)d_jellybeans, (void)d_carrots,
+        (void)d_basket;
 }
 
 struct CanonicalField {
