@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -677,4 +678,52 @@ TEST_CASE("sprites: weapon stays in bounds and reacts to muzzle flash") {
     REQUIRE(firing_flash_pixels > idle_flash_pixels);
     REQUIRE(idle_buffer.guards_intact());
     REQUIRE(firing_buffer.guards_intact());
+}
+
+TEST_CASE("sprites: the muzzle flash erupts past the end of the barrel") {
+    // The test above counts flash pixels, and a count carries no position: the
+    // flash can be drawn anywhere on the weapon and still raise the tally. Moving
+    // it to the far side of the barrel (the sign of the 22-unit offset along the
+    // weapon axis) was verified to pass the entire suite, 106/106.
+    //
+    // What a muzzle flash actually has to do is stick out past the muzzle. The
+    // barrel points up and to the left, so the up-left extreme of everything drawn
+    // is the observable: firing must push that extreme further out than the idle
+    // weapon reaches. Recoil works against this assertion rather than for it,
+    // because it shoves the whole weapon down-right by about 14 pixels, so the
+    // flash has to overcome that before the check can pass.
+    auto upper_left_extreme = [](uint16_t muzzle_flash) {
+        eh::GameState gs = state_facing_east();
+        gs.player.bob = 0;
+        gs.muzzle_flash = muzzle_flash;
+        GuardedFramebuffer buffer;
+        eh::render_weapon(gs, buffer.framebuffer);
+        const std::vector<uint32_t> pixels = buffer.pixels();
+
+        int extreme = std::numeric_limits<int>::max();
+        long long drawn = 0;
+        for (int y = 0; y < eh::Framebuffer::H; ++y) {
+            for (int x = 0; x < eh::Framebuffer::W; ++x) {
+                if (pixels[static_cast<std::size_t>(y) * eh::Framebuffer::W +
+                           static_cast<std::size_t>(x)] == BACKGROUND) {
+                    continue;
+                }
+                ++drawn;
+                extreme = std::min(extreme, x + y);
+            }
+        }
+        REQUIRE(drawn > 0);
+        REQUIRE(buffer.guards_intact());
+        return extreme;
+    };
+
+    const int idle_reach = upper_left_extreme(0);
+    const int firing_reach = upper_left_extreme(4);
+
+    // Measured: 473 idle, 422 firing. With the flash on the wrong side of the
+    // barrel the silhouette is just the recoiled weapon and this rises to 483,
+    // so the comparison alone is decisive; the margin keeps a flash that barely
+    // peeks out from satisfying it.
+    REQUIRE(firing_reach < idle_reach);
+    REQUIRE(idle_reach - firing_reach > 25);
 }
